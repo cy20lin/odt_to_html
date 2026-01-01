@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-ODT to HTML Converter
+ODT to HTML Converter (v2)
 
 Converts OpenDocument Text (.odt) files to standalone HTML with embedded resources.
 All images and media are embedded as base64 data URIs for single-file portability.
 
 Usage:
-    python odt_to_html.py <input.odt> <output.html>
+    python odt_to_html.py <input.odt> <output.html> [--page-breaks]
+    
+Options:
+    --page-breaks    Show visible page break separators in output HTML
 """
 
 import argparse
@@ -31,6 +34,7 @@ NAMESPACES = {
     'svg': 'urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0',
     'dc': 'http://purl.org/dc/elements/1.1/',
     'meta': 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0',
+    'loext': 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0',
 }
 
 # Register namespaces for ElementTree
@@ -41,11 +45,14 @@ for prefix, uri in NAMESPACES.items():
 class ODTConverter:
     """Converts ODT files to HTML with embedded resources."""
     
-    def __init__(self, odt_path: str):
+    def __init__(self, odt_path: str, show_page_breaks: bool = False):
         self.odt_path = Path(odt_path)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
         self.list_styles: dict[str, dict] = {}
+        self.font_declarations: dict[str, dict] = {}
+        self.footnotes: list[dict] = []  # Collect footnotes for end of document
+        self.show_page_breaks = show_page_breaks
         
     def convert(self) -> str:
         """Convert the ODT file to HTML string."""
@@ -70,18 +77,32 @@ class ODTConverter:
             
             # Convert content to HTML
             html_body = self._convert_content(content_xml)
+            
+            # Add footnotes section if any
+            if self.footnotes:
+                html_body += self._generate_footnotes_section()
         
         return self._wrap_html(html_body)
     
     def _load_resources(self, odt_zip: zipfile.ZipFile) -> None:
         """Load all embedded resources from the ODT archive."""
         for name in odt_zip.namelist():
-            if name.startswith('Pictures/') or name.startswith('media/'):
+            if name.startswith('Pictures/') or name.startswith('media/') or name.startswith('ObjectReplacements/'):
                 self.resources[name] = odt_zip.read(name)
     
     def _parse_styles(self, xml_content: str) -> None:
         """Parse style definitions from XML content."""
         root = ET.fromstring(xml_content)
+        
+        # Parse font declarations
+        for font_decl in root.iter(f"{{{NAMESPACES['style']}}}font-face"):
+            font_name = font_decl.get(f"{{{NAMESPACES['style']}}}name")
+            font_family = font_decl.get(f"{{{NAMESPACES['svg']}}}font-family")
+            if font_name and font_family:
+                self.font_declarations[font_name] = {
+                    'family': font_family.strip("'\""),
+                    'generic': font_decl.get(f"{{{NAMESPACES['style']}}}font-family-generic", ""),
+                }
         
         # Find all style definitions
         for style in root.iter(f"{{{NAMESPACES['style']}}}style"):
@@ -90,6 +111,11 @@ class ODTConverter:
                 continue
             
             style_props = {}
+            
+            # Get parent style properties first
+            parent_style = style.get(f"{{{NAMESPACES['style']}}}parent-style-name")
+            if parent_style and parent_style in self.styles:
+                style_props.update(self.styles[parent_style])
             
             # Get text properties
             text_props = style.find(f"{{{NAMESPACES['style']}}}text-properties")
@@ -110,6 +136,11 @@ class ODTConverter:
             cell_props = style.find(f"{{{NAMESPACES['style']}}}table-cell-properties")
             if cell_props is not None:
                 self._extract_cell_properties(cell_props, style_props)
+            
+            # Get graphic properties
+            graphic_props = style.find(f"{{{NAMESPACES['style']}}}graphic-properties")
+            if graphic_props is not None:
+                self._extract_graphic_properties(graphic_props, style_props)
             
             self.styles[style_name] = style_props
         
@@ -169,15 +200,39 @@ class ODTConverter:
         if color:
             style_dict['color'] = color
         
-        # Font family
-        font_family = props.get(f"{{{NAMESPACES['fo']}}}font-family")
-        if font_family:
-            style_dict['font-family'] = font_family
+        # Font family - use the actual font name from declarations
+        font_name = props.get(f"{{{NAMESPACES['style']}}}font-name")
+        if font_name:
+            if font_name in self.font_declarations:
+                font_info = self.font_declarations[font_name]
+                font_family = font_info['family']
+                generic = font_info.get('generic', '')
+                if generic:
+                    style_dict['font-family'] = f"'{font_family}', {generic}"
+                else:
+                    style_dict['font-family'] = f"'{font_family}'"
+            else:
+                style_dict['font-family'] = f"'{font_name}'"
+        
+        # Fallback to fo:font-family
+        fo_font_family = props.get(f"{{{NAMESPACES['fo']}}}font-family")
+        if fo_font_family and 'font-family' not in style_dict:
+            style_dict['font-family'] = fo_font_family
         
         # Background color
         bg_color = props.get(f"{{{NAMESPACES['fo']}}}background-color")
         if bg_color and bg_color != 'transparent':
             style_dict['background-color'] = bg_color
+        
+        # Subscript/Superscript
+        text_position = props.get(f"{{{NAMESPACES['style']}}}text-position")
+        if text_position:
+            if text_position.startswith('sub') or text_position.startswith('-'):
+                style_dict['vertical-align'] = 'sub'
+                style_dict['font-size'] = '0.8em'
+            elif text_position.startswith('super') or (text_position[0].isdigit() and int(text_position.split('%')[0]) > 0):
+                style_dict['vertical-align'] = 'super'
+                style_dict['font-size'] = '0.8em'
     
     def _extract_paragraph_properties(self, props: ET.Element, style_dict: dict) -> None:
         """Extract paragraph formatting properties."""
@@ -242,6 +297,22 @@ class ODTConverter:
         if vertical_align:
             style_dict['vertical-align'] = vertical_align
     
+    def _extract_graphic_properties(self, props: ET.Element, style_dict: dict) -> None:
+        """Extract graphic/drawing properties."""
+        # Stroke/border color
+        stroke = props.get(f"{{{NAMESPACES['svg']}}}stroke-color")
+        if stroke:
+            style_dict['border-color'] = stroke
+        
+        stroke_width = props.get(f"{{{NAMESPACES['svg']}}}stroke-width")
+        if stroke_width:
+            style_dict['border-width'] = stroke_width
+        
+        # Fill color
+        fill_color = props.get(f"{{{NAMESPACES['draw']}}}fill-color")
+        if fill_color:
+            style_dict['background-color'] = fill_color
+    
     def _get_style_string(self, style_name: str) -> str:
         """Get CSS style string for a named style."""
         if style_name not in self.styles:
@@ -281,7 +352,12 @@ class ODTConverter:
             elif tag == 'frame':
                 html_parts.append(self._process_frame(child))
             elif tag == 'soft-page-break':
-                html_parts.append('<hr class="page-break">')
+                if self.show_page_breaks:
+                    html_parts.append('<div class="page-break"><span>Page Break</span></div>')
+            elif tag == 'sequence-decls':
+                pass  # Sequence declarations, skip
+            elif tag == 'text-box':
+                html_parts.append(self._process_text_box(child, []))
         
         return '\n'.join(html_parts)
     
@@ -344,7 +420,15 @@ class ODTConverter:
             elif tag == 'note':
                 parts.append(self._process_note(child))
             elif tag == 'soft-page-break':
-                pass  # Ignore inline page breaks
+                if self.show_page_breaks:
+                    parts.append('<span class="inline-page-break"></span>')
+            elif tag == 'sequence':
+                # Handle sequence numbers (Figure 1, Table 1, etc.)
+                parts.append(self._process_sequence(child))
+            elif tag == 'note-ref':
+                # Note reference
+                ref_name = child.get(f"{{{NAMESPACES['text']}}}ref-name", "")
+                parts.append(f'<sup><a href="#note-{escape(ref_name)}">{escape(child.text or "")}</a></sup>')
             else:
                 # Try to get any text content
                 if child.text:
@@ -355,6 +439,12 @@ class ODTConverter:
                 parts.append(escape(child.tail))
         
         return ''.join(parts)
+    
+    def _process_sequence(self, seq: ET.Element) -> str:
+        """Process a sequence element (figure/table numbering)."""
+        # The sequence text is the number itself
+        seq_text = seq.text or ""
+        return escape(seq_text)
     
     def _process_span(self, span: ET.Element) -> str:
         """Process a text span element."""
@@ -375,7 +465,10 @@ class ODTConverter:
         return f'<a href="{escape(href)}">{content}</a>'
     
     def _process_frame(self, frame: ET.Element) -> str:
-        """Process a frame element (usually contains images)."""
+        """Process a frame element (usually contains images or drawings)."""
+        # Get frame name (used for captions)
+        frame_name = frame.get(f"{{{NAMESPACES['draw']}}}name", "")
+        
         # Get frame dimensions
         width = frame.get(f"{{{NAMESPACES['svg']}}}width", "")
         height = frame.get(f"{{{NAMESPACES['svg']}}}height", "")
@@ -389,17 +482,50 @@ class ODTConverter:
         # Look for image inside the frame
         image = frame.find(f".//{{{NAMESPACES['draw']}}}image")
         if image is not None:
-            return self._process_image(image, style_parts)
+            img_html = self._process_image(image, style_parts, frame_name)
+            # Check for caption in text:p after image in the frame's parent context
+            return img_html
         
         # Look for text box
         text_box = frame.find(f".//{{{NAMESPACES['draw']}}}text-box")
         if text_box is not None:
             return self._process_text_box(text_box, style_parts)
         
+        # Look for custom shapes (drawings)
+        custom_shape = frame.find(f".//{{{NAMESPACES['draw']}}}custom-shape")
+        if custom_shape is not None:
+            return self._process_custom_shape(frame, custom_shape, style_parts)
+        
+        # Look for other drawing objects
+        rect = frame.find(f".//{{{NAMESPACES['draw']}}}rect")
+        if rect is not None:
+            return self._process_drawing_rect(frame, rect, style_parts)
+        
+        ellipse = frame.find(f".//{{{NAMESPACES['draw']}}}ellipse")
+        if ellipse is not None:
+            return self._process_drawing_ellipse(frame, ellipse, style_parts)
+        
+        line = frame.find(f".//{{{NAMESPACES['draw']}}}line")
+        if line is not None:
+            return self._process_drawing_line(line, style_parts)
+        
+        # Look for OLE objects with replacement images
+        ole_object = frame.find(f".//{{{NAMESPACES['draw']}}}object")
+        if ole_object is not None:
+            # Try to find replacement image
+            replacement_img = frame.find(f".//{{{NAMESPACES['draw']}}}image")
+            if replacement_img is not None:
+                return self._process_image(replacement_img, style_parts, frame_name)
+        
+        # Fallback: check for ObjectReplacements
+        for name in self.resources:
+            if 'ObjectReplacement' in name and frame_name and frame_name in name:
+                return self._create_image_from_resource(name, style_parts)
+        
         return ""
     
-    def _process_image(self, image: ET.Element, style_parts: list) -> str:
-        """Process an image element."""
+    def _process_image(self, image: ET.Element, style_parts: list, frame_name: str = "") -> str:
+        """Process an image element with optional caption support."""
         href = image.get(f"{{{NAMESPACES['xlink']}}}href", "")
         
         if not href:
@@ -418,7 +544,159 @@ class ODTConverter:
         style_str = "; ".join(style_parts) if style_parts else ""
         style_attr = f' style="{style_str}"' if style_str else ''
         
+        alt_text = frame_name if frame_name else ""
+        
+        # Return as a figure element for semantic correctness
+        return f'<img src="{src}"{style_attr} alt="{escape(alt_text)}">'
+    
+    def _create_image_from_resource(self, resource_name: str, style_parts: list) -> str:
+        """Create an image tag from a resource."""
+        data = self.resources[resource_name]
+        mime_type = mimetypes.guess_type(resource_name)[0] or 'application/octet-stream'
+        base64_data = base64.b64encode(data).decode('ascii')
+        src = f"data:{mime_type};base64,{base64_data}"
+        
+        style_str = "; ".join(style_parts) if style_parts else ""
+        style_attr = f' style="{style_str}"' if style_str else ''
+        
         return f'<img src="{src}"{style_attr} alt="">'
+    
+    def _process_custom_shape(self, frame: ET.Element, shape: ET.Element, style_parts: list) -> str:
+        """Process a custom shape drawing element."""
+        # Get dimensions
+        width = frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
+        height = frame.get(f"{{{NAMESPACES['svg']}}}height", "100px")
+        
+        # Try to convert dimensions to pixels for SVG
+        svg_width = self._dimension_to_px(width)
+        svg_height = self._dimension_to_px(height)
+        
+        # Get style name for colors
+        style_name = shape.get(f"{{{NAMESPACES['draw']}}}style-name", "")
+        shape_style = self.styles.get(style_name, {})
+        
+        fill_color = shape_style.get('background-color', '#e0e0e0')
+        stroke_color = shape_style.get('border-color', '#333333')
+        stroke_width = shape_style.get('border-width', '1px')
+        
+        # Get the enhanced path or geometry
+        enhanced_geom = shape.find(f".//{{{NAMESPACES['draw']}}}enhanced-geometry")
+        
+        # Check for text inside the shape
+        text_content = ""
+        for p in shape.findall(f".//{{{NAMESPACES['text']}}}p"):
+            text_content += self._process_inline_content(p) + " "
+        text_content = text_content.strip()
+        
+        if enhanced_geom is not None:
+            path_data = enhanced_geom.get(f"{{{NAMESPACES['draw']}}}enhanced-path", "")
+            shape_type = enhanced_geom.get(f"{{{NAMESPACES['draw']}}}type", "")
+            
+            # Create SVG based on shape type
+            if shape_type == 'rectangle' or not path_data:
+                svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}" 
+                          fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>
+                    {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
+                </svg>'''
+            elif shape_type == 'ellipse':
+                svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
+                    <ellipse cx="{svg_width/2}" cy="{svg_height/2}" rx="{svg_width/2-2}" ry="{svg_height/2-2}"
+                             fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>
+                    {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
+                </svg>'''
+            else:
+                # Generic shape with border
+                svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"
+                          fill="{fill_color}" stroke="{stroke_color}" stroke-width="2" rx="5"/>
+                    {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
+                </svg>'''
+        else:
+            # Fallback rectangle
+            svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
+                <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"
+                      fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>
+                {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
+            </svg>'''
+        
+        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+    
+    def _process_drawing_rect(self, frame: ET.Element, rect: ET.Element, style_parts: list) -> str:
+        """Process a rectangle drawing."""
+        width = frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
+        height = frame.get(f"{{{NAMESPACES['svg']}}}height", "50px")
+        
+        svg_width = self._dimension_to_px(width)
+        svg_height = self._dimension_to_px(height)
+        
+        svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"
+                  fill="#e0e0e0" stroke="#333" stroke-width="2"/>
+        </svg>'''
+        
+        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+    
+    def _process_drawing_ellipse(self, frame: ET.Element, ellipse: ET.Element, style_parts: list) -> str:
+        """Process an ellipse drawing."""
+        width = frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
+        height = frame.get(f"{{{NAMESPACES['svg']}}}height", "100px")
+        
+        svg_width = self._dimension_to_px(width)
+        svg_height = self._dimension_to_px(height)
+        
+        svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
+            <ellipse cx="{svg_width/2}" cy="{svg_height/2}" rx="{svg_width/2-2}" ry="{svg_height/2-2}"
+                     fill="#e0e0e0" stroke="#333" stroke-width="2"/>
+        </svg>'''
+        
+        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+    
+    def _process_drawing_line(self, line: ET.Element, style_parts: list) -> str:
+        """Process a line drawing."""
+        x1 = line.get(f"{{{NAMESPACES['svg']}}}x1", "0")
+        y1 = line.get(f"{{{NAMESPACES['svg']}}}y1", "0")
+        x2 = line.get(f"{{{NAMESPACES['svg']}}}x2", "100")
+        y2 = line.get(f"{{{NAMESPACES['svg']}}}y2", "0")
+        
+        # Convert to pixels
+        x1_px = self._dimension_to_px(x1)
+        y1_px = self._dimension_to_px(y1)
+        x2_px = self._dimension_to_px(x2)
+        y2_px = self._dimension_to_px(y2)
+        
+        svg_width = max(x1_px, x2_px) + 10
+        svg_height = max(y1_px, y2_px) + 10
+        
+        svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
+            <line x1="{x1_px}" y1="{y1_px}" x2="{x2_px}" y2="{y2_px}" stroke="#333" stroke-width="2"/>
+        </svg>'''
+        
+        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+    
+    def _dimension_to_px(self, dim: str) -> float:
+        """Convert an ODF dimension to pixels."""
+        if not dim:
+            return 100
+        
+        dim = dim.strip()
+        
+        # Remove unit and convert
+        if dim.endswith('cm'):
+            return float(dim[:-2]) * 37.795275591  # 1cm = 37.8px
+        elif dim.endswith('mm'):
+            return float(dim[:-2]) * 3.7795275591  # 1mm = 3.78px
+        elif dim.endswith('in'):
+            return float(dim[:-2]) * 96  # 1in = 96px
+        elif dim.endswith('pt'):
+            return float(dim[:-2]) * 1.333  # 1pt = 1.33px
+        elif dim.endswith('px'):
+            return float(dim[:-2])
+        else:
+            try:
+                return float(dim)
+            except ValueError:
+                return 100
     
     def _process_text_box(self, text_box: ET.Element, style_parts: list) -> str:
         """Process a text box element."""
@@ -429,7 +707,7 @@ class ODTConverter:
         style_parts.append("display: inline-block")
         
         style_str = "; ".join(style_parts)
-        return f'<div style="{style_str}">{content}</div>'
+        return f'<div class="text-box" style="{style_str}">{content}</div>'
     
     def _process_list(self, list_elem: ET.Element, level: int = 1) -> str:
         """Process a list element."""
@@ -536,7 +814,7 @@ class ODTConverter:
         return f'<{cell_tag}{attr_str}>{content}</{cell_tag}>'
     
     def _process_note(self, note: ET.Element) -> str:
-        """Process a footnote/endnote element."""
+        """Process a footnote/endnote element - collect for end of document."""
         note_class = note.get(f"{{{NAMESPACES['text']}}}note-class", "footnote")
         note_id = note.get(f"{{{NAMESPACES['text']}}}id", "")
         
@@ -544,24 +822,125 @@ class ODTConverter:
         citation = note.find(f"{{{NAMESPACES['text']}}}note-citation")
         citation_text = citation.text if citation is not None and citation.text else "*"
         
-        # Get note body
+        # Get note body content
         body = note.find(f"{{{NAMESPACES['text']}}}note-body")
-        body_html = self._process_element(body) if body is not None else ""
+        body_html = ""
+        if body is not None:
+            # Process all paragraphs in the note body
+            body_parts = []
+            for child in body:
+                tag = child.tag.split('}')[-1]
+                if tag == 'p':
+                    body_parts.append(self._process_inline_content(child))
+            body_html = " ".join(body_parts)
         
-        return f'<sup><a href="#note-{escape(note_id)}" id="ref-{escape(note_id)}">[{escape(citation_text)}]</a></sup>'
+        # Store footnote for later rendering
+        self.footnotes.append({
+            'id': note_id,
+            'citation': citation_text,
+            'content': body_html,
+            'class': note_class,
+        })
+        
+        # Return the inline reference
+        return f'<sup class="footnote-ref"><a href="#note-{escape(note_id)}" id="ref-{escape(note_id)}">[{escape(citation_text)}]</a></sup>'
+    
+    def _generate_footnotes_section(self) -> str:
+        """Generate the footnotes section at the end of the document."""
+        if not self.footnotes:
+            return ""
+        
+        html_parts = ['<hr class="footnotes-separator">', '<section class="footnotes">', '<h4>Footnotes</h4>', '<ol class="footnotes-list">']
+        
+        for note in self.footnotes:
+            note_id = note['id']
+            citation = note['citation']
+            content = note['content']
+            
+            html_parts.append(
+                f'<li id="note-{escape(note_id)}" value="{escape(citation)}">'
+                f'{content} '
+                f'<a href="#ref-{escape(note_id)}" class="footnote-backref" title="Go back to reference">↩</a>'
+                f'</li>'
+            )
+        
+        html_parts.append('</ol>')
+        html_parts.append('</section>')
+        
+        return '\n'.join(html_parts)
     
     def _wrap_html(self, body_content: str) -> str:
         """Wrap the body content in a complete HTML document."""
+        # Collect unique font families from styles
+        font_families = set()
+        for style_props in self.styles.values():
+            if 'font-family' in style_props:
+                font = style_props['font-family'].strip("'\"")
+                if ',' in font:
+                    font = font.split(',')[0].strip().strip("'\"")
+                font_families.add(font)
+        
+        # Generate Google Fonts import for common fonts
+        google_fonts_css = ""
+        webfont_families = []
+        for font in font_families:
+            # Common fonts that are available on Google Fonts
+            google_font_map = {
+                'Liberation Serif': 'Noto Serif',
+                'Liberation Sans': 'Noto Sans', 
+                'Liberation Mono': 'Noto Sans Mono',
+                'Times New Roman': 'Noto Serif',
+                'Arial': 'Noto Sans',
+                'Courier New': 'Noto Sans Mono',
+                'Noto Serif CJK TC': 'Noto Serif TC',
+                'Noto Sans CJK TC': 'Noto Sans TC',
+            }
+            if font in google_font_map:
+                webfont_families.append(google_font_map[font])
+            elif font.startswith('Noto'):
+                webfont_families.append(font.replace(' ', '+'))
+        
+        if webfont_families:
+            unique_fonts = list(set(webfont_families))
+            fonts_query = '|'.join(f.replace(' ', '+') for f in unique_fonts)
+            google_fonts_css = f'@import url("https://fonts.googleapis.com/css2?family={fonts_query}&display=swap");'
+        
+        page_break_css = ""
+        if self.show_page_breaks:
+            page_break_css = """
+        .page-break {
+            page-break-before: always;
+            border: none;
+            border-top: 2px dashed #999;
+            margin: 2em 0;
+            position: relative;
+            text-align: center;
+        }
+        .page-break span {
+            background: #fff;
+            padding: 0 10px;
+            color: #999;
+            font-size: 12px;
+            position: relative;
+            top: -10px;
+        }
+        .inline-page-break::after {
+            content: '⋯';
+            color: #999;
+        }
+"""
+        
         return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="generator" content="ODT to HTML Converter">
+    <meta name="generator" content="ODT to HTML Converter v2">
     <title>Converted Document</title>
     <style>
+        {google_fonts_css}
         body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Noto Serif', 'Times New Roman', serif;
             line-height: 1.6;
             max-width: 800px;
             margin: 0 auto;
@@ -592,6 +971,20 @@ class ODTConverter:
             max-width: 100%;
             height: auto;
         }}
+        figure {{
+            margin: 1em 0;
+            text-align: center;
+        }}
+        figure img {{
+            display: block;
+            margin: 0 auto;
+        }}
+        figcaption {{
+            margin-top: 0.5em;
+            font-style: italic;
+            color: #666;
+            font-size: 0.9em;
+        }}
         a {{
             color: #0066cc;
         }}
@@ -602,15 +995,42 @@ class ODTConverter:
         li {{
             margin: 0.25em 0;
         }}
-        hr.page-break {{
-            border: none;
-            border-top: 2px dashed #ccc;
-            margin: 2em 0;
-        }}
-        sup a {{
+        .footnote-ref a {{
             text-decoration: none;
             color: #0066cc;
         }}
+        .footnotes {{
+            margin-top: 2em;
+            padding-top: 1em;
+            font-size: 0.9em;
+        }}
+        .footnotes h4 {{
+            margin-bottom: 0.5em;
+            color: #555;
+        }}
+        .footnotes-list {{
+            padding-left: 1.5em;
+        }}
+        .footnotes-list li {{
+            margin: 0.5em 0;
+        }}
+        .footnote-backref {{
+            text-decoration: none;
+            color: #0066cc;
+            margin-left: 0.5em;
+        }}
+        .footnotes-separator {{
+            border: none;
+            border-top: 1px solid #ccc;
+            margin: 2em 0 1em 0;
+        }}
+        .drawing {{
+            margin: 0.5em 0;
+        }}
+        .text-box {{
+            margin: 0.5em 0;
+        }}
+        {page_break_css}
     </style>
 </head>
 <body>
@@ -626,11 +1046,14 @@ def main():
         epilog='''
 Examples:
     python odt_to_html.py document.odt output.html
+    python odt_to_html.py document.odt output.html --page-breaks
     python odt_to_html.py "path/to/my document.odt" "path/to/output.html"
         '''
     )
     parser.add_argument('input', help='Path to the input ODT file')
     parser.add_argument('output', help='Path for the output HTML file')
+    parser.add_argument('--page-breaks', action='store_true',
+                        help='Show visible page break separators in output HTML')
     
     args = parser.parse_args()
     
@@ -646,7 +1069,7 @@ Examples:
         print(f"Warning: Input file does not have .odt extension: {input_path}", file=sys.stderr)
     
     try:
-        converter = ODTConverter(str(input_path))
+        converter = ODTConverter(str(input_path), show_page_breaks=args.page_breaks)
         html_content = converter.convert()
         
         # Ensure output directory exists

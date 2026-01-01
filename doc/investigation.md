@@ -15,3 +15,7 @@
 
 Let me know if there is any difficulty in fixing these issues, 
 e.g. recommended using exiting packages or library could help, or other limitation.
+
+# v2  (by claude opus 4.5 thinking)
+
+use of external resource is not preferred, the html should be offline viewable
