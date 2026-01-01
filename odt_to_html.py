@@ -923,118 +923,129 @@ class ODTConverter:
             return str(val)
 
         i = 0
+        last_cmd = None # Track last command for implicit repetition
+
         while i < len(resolved_tokens):
             token = resolved_tokens[i]
             
+            # Determine command to execute
+            cmd = None
             if isinstance(token, str) and token.isalpha():
                 cmd = token
                 i += 1
-                
-                if cmd == 'M':
-                    # Abs Move: M x y
-                    if i + 1 < len(resolved_tokens):
-                        x = resolved_tokens[i]
-                        y = resolved_tokens[i+1]
-                        svg_path.append(f"M {fmt(x)} {fmt(y)}")
-                        current_x, current_y = x, y
-                        subpath_start_x, subpath_start_y = x, y
-                        is_subpath_start = False
-                        i += 2
-                elif cmd == 'L':
-                    # Abs Line: L x y
-                    if i + 1 < len(resolved_tokens):
-                        x = resolved_tokens[i]
-                        y = resolved_tokens[i+1]
-                        svg_path.append(f"L {fmt(x)} {fmt(y)}")
-                        current_x, current_y = x, y
-                        is_subpath_start = False
-                        i += 2
-                elif cmd == 'C':
-                    # Cubic Bezier: C x1 y1 x2 y2 x y
-                    if i + 5 < len(resolved_tokens):
-                        coords = resolved_tokens[i:i+6]
-                        svg_path.append(f"C {' '.join(fmt(c) for c in coords)}")
-                        current_x, current_y = coords[4], coords[5]
-                        is_subpath_start = False
-                        i += 6
-                elif cmd == 'Z':
-                    svg_path.append("Z")
-                    current_x, current_y = subpath_start_x, subpath_start_y
-                    # is_subpath_start remains False usually? 
-                    pass
-                elif cmd == 'N':
-                    # End subpath
-                    is_subpath_start = True
-                elif cmd == 'X' or cmd == 'Y':
-                    # Treated as Arc (Quarter Ellipse) for Round Rectangles
-                    # Abs target: x y
-                    if i + 1 < len(resolved_tokens):
-                        x = resolved_tokens[i]
-                        y = resolved_tokens[i+1]
-                        
-                        # Calculate radii based on distance
-                        rx = abs(x - current_x)
-                        ry = abs(y - current_y)
-                        
-                        # A rx ry rot large_arc sweep x y
-                        # Sweep 0 is usually correct for convex corners in standard ODF paths
-                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 0 0 {fmt(x)} {fmt(y)}")
-                        
-                        current_x, current_y = x, y
-                        is_subpath_start = False
-                        i += 2
-                elif cmd == 'U':
-                    # Angle Ellipse: U cx cy rx ry start end
-                    if i + 5 < len(resolved_tokens):
-                        args = resolved_tokens[i:i+6]
-                        cx, cy, rx, ry, start_deg, end_deg = args
-                        
-                        start_rad = math.radians(start_deg)
-                        end_rad = math.radians(end_deg)
-                        
-                        sx = cx + rx * math.cos(start_rad)
-                        sy = cy + ry * math.sin(start_rad)
-                        
-                        # implicit move/line logic
-                        action = 'M' if is_subpath_start else 'L'
-                        svg_path.append(f"{action} {fmt(sx)} {fmt(sy)}")
-                        
-                        # Draw arcs
-                        if abs(end_deg - start_deg) >= 360:
-                            mid_rad = start_rad + math.pi
-                            mid_x = cx + rx * math.cos(mid_rad)
-                            mid_y = cy + ry * math.sin(mid_rad)
-                            end_x = cx + rx * math.cos(end_rad)
-                            end_y = cy + ry * math.sin(end_rad)
-                            
-                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(mid_x)} {fmt(mid_y)}")
-                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(end_x)} {fmt(end_y)}")
-                        else:
-                            ex = cx + rx * math.cos(end_rad)
-                            ey = cy + ry * math.sin(end_rad)
-                            delta = end_deg - start_deg
-                            large = 1 if abs(delta) > 180 else 0
-                            sweep = 1 # Clockwise usually
-                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 {large} {sweep} {fmt(ex)} {fmt(ey)}")
-                        
-                        # Update current pos (end of arc)
-                        current_x = cx + rx * math.cos(end_rad)
-                        current_y = cy + ry * math.sin(end_rad)
-                        is_subpath_start = False
-                        i += 6
-                else:
-                    # Unknown command?
-                    pass
+                last_cmd = cmd
             else:
-                # Number without command? 
-                # Could be implicit LineTo or continuation of polyline?
-                # ODF paths are usually explicit.
-                # If we have numbers here, just skip or append?
-                # Previous logic passed them through.
-                # But treating them as L is safer if we suspect polyline.
-                # For safety, if we see 2 numbers, treat as implicit L?
-                # Or just ignore to prevent corruption.
-                i += 1
+                # Implicit command based on last_cmd
+                if last_cmd in ['M', 'L']:
+                    cmd = 'L' # M followed by coords implies L, L repeats
+                elif last_cmd == 'C':
+                    cmd = 'C'
+                elif last_cmd in ['X', 'Y']:
+                    # Implicit repetition for X/Y? 
+                    # Assuming X/Y also behave like L regarding coordinate consumption (take 2 args here as per our Arc logic which uses targets)
+                    # Although ODF spec for X/Y is murky, treating them as L-like targets for Arc seems consistent with 'Poly-Arc'?
+                    # Or should we fallback to L? 
+                    # Let's fallback to behaving like the explicit command was repeated.
+                    cmd = last_cmd 
+                # U, Z, N usually don't have coordinate repetition in the same way (U has fixed args, Z/N have none/ignore)
+            
+            if cmd == 'M':
+                # Abs Move: M x y
+                if i + 1 < len(resolved_tokens):
+                    x = resolved_tokens[i]
+                    y = resolved_tokens[i+1]
+                    svg_path.append(f"M {fmt(x)} {fmt(y)}")
+                    current_x, current_y = x, y
+                    subpath_start_x, subpath_start_y = x, y
+                    is_subpath_start = False
+                    i += 2
+            elif cmd == 'L':
+                # Abs Line: L x y
+                if i + 1 < len(resolved_tokens):
+                    x = resolved_tokens[i]
+                    y = resolved_tokens[i+1]
+                    svg_path.append(f"L {fmt(x)} {fmt(y)}")
+                    current_x, current_y = x, y
+                    is_subpath_start = False
+                    i += 2
+            elif cmd == 'C':
+                # Cubic Bezier: C x1 y1 x2 y2 x y
+                if i + 5 < len(resolved_tokens):
+                    coords = resolved_tokens[i:i+6]
+                    svg_path.append(f"C {' '.join(fmt(c) for c in coords)}")
+                    current_x, current_y = coords[4], coords[5]
+                    is_subpath_start = False
+                    i += 6
+            elif cmd == 'Z':
+                svg_path.append("Z")
+                current_x, current_y = subpath_start_x, subpath_start_y
+                # is_subpath_start remains False usually? 
+                pass
+            elif cmd == 'N':
+                # End subpath
+                is_subpath_start = True
+            elif cmd == 'X' or cmd == 'Y':
+                # Treated as Arc (Quarter Ellipse) for Round Rectangles
+                # Abs target: x y
+                if i + 1 < len(resolved_tokens):
+                    x = resolved_tokens[i]
+                    y = resolved_tokens[i+1]
+                    
+                    # Calculate radii based on distance
+                    rx = abs(x - current_x)
+                    ry = abs(y - current_y)
+                    
+                    # A rx ry rot large_arc sweep x y
+                    # Sweep 0 is usually correct for convex corners in standard ODF paths
+                    svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 0 0 {fmt(x)} {fmt(y)}")
+                    
+                    current_x, current_y = x, y
+                    is_subpath_start = False
+                    i += 2
+            elif cmd == 'U':
+                # Angle Ellipse: U cx cy rx ry start end
+                if i + 5 < len(resolved_tokens):
+                    args = resolved_tokens[i:i+6]
+                    cx, cy, rx, ry, start_deg, end_deg = args
+                    
+                    start_rad = math.radians(start_deg)
+                    end_rad = math.radians(end_deg)
+                    
+                    sx = cx + rx * math.cos(start_rad)
+                    sy = cy + ry * math.sin(start_rad)
+                    
+                    # implicit move/line logic
+                    action = 'M' if is_subpath_start else 'L'
+                    svg_path.append(f"{action} {fmt(sx)} {fmt(sy)}")
+                    
+                    # Draw arcs
+                    if abs(end_deg - start_deg) >= 360:
+                        mid_rad = start_rad + math.pi
+                        mid_x = cx + rx * math.cos(mid_rad)
+                        mid_y = cy + ry * math.sin(mid_rad)
+                        end_x = cx + rx * math.cos(end_rad)
+                        end_y = cy + ry * math.sin(end_rad)
+                        
+                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(mid_x)} {fmt(mid_y)}")
+                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(end_x)} {fmt(end_y)}")
+                    else:
+                        ex = cx + rx * math.cos(end_rad)
+                        ey = cy + ry * math.sin(end_rad)
+                        delta = end_deg - start_deg
+                        large = 1 if abs(delta) > 180 else 0
+                        sweep = 1 # Clockwise usually
+                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 {large} {sweep} {fmt(ex)} {fmt(ey)}")
+                    
+                    # Update current pos (end of arc)
+                    current_x = cx + rx * math.cos(end_rad)
+                    current_y = cy + ry * math.sin(end_rad)
+                    is_subpath_start = False
+                    i += 6
+            else:
+                # Unknown command? skip
+                if cmd is None:
+                    i += 1
+                pass
                 
         return " ".join(svg_path)
     
