@@ -45,7 +45,7 @@ for prefix, uri in NAMESPACES.items():
 class ODTConverter:
     """Converts ODT files to HTML with embedded resources."""
     
-    def __init__(self, odt_path: str, show_page_breaks: bool = False):
+    def __init__(self, odt_path: str, show_page_breaks: bool = True):
         self.odt_path = Path(odt_path)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
@@ -186,9 +186,11 @@ class ODTConverter:
             style_dict['text-decoration'] = 'underline'
         
         text_line_through = props.get(f"{{{NAMESPACES['style']}}}text-line-through-style")
-        if text_line_through and text_line_through != 'none':
+        text_line_through_type = props.get(f"{{{NAMESPACES['style']}}}text-line-through-type")
+        if (text_line_through and text_line_through != 'none') or (text_line_through_type and text_line_through_type != 'none'):
             existing = style_dict.get('text-decoration', '')
-            style_dict['text-decoration'] = f"{existing} line-through".strip()
+            if 'line-through' not in existing:
+                style_dict['text-decoration'] = f"{existing} line-through".strip()
         
         # Font size
         font_size = props.get(f"{{{NAMESPACES['fo']}}}font-size")
@@ -465,7 +467,11 @@ class ODTConverter:
         return f'<a href="{escape(href)}">{content}</a>'
     
     def _process_frame(self, frame: ET.Element) -> str:
-        """Process a frame element (usually contains images or drawings)."""
+        """Process a frame element (usually contains images or drawings).
+        
+        Frames can contain multiple elements: images, text-boxes with captions,
+        custom shapes, etc. We process all children and combine the results.
+        """
         # Get frame name (used for captions)
         frame_name = frame.get(f"{{{NAMESPACES['draw']}}}name", "")
         
@@ -479,43 +485,35 @@ class ODTConverter:
         if height:
             style_parts.append(f"height: {height}")
         
-        # Look for image inside the frame
-        image = frame.find(f".//{{{NAMESPACES['draw']}}}image")
-        if image is not None:
-            img_html = self._process_image(image, style_parts, frame_name)
-            # Check for caption in text:p after image in the frame's parent context
-            return img_html
+        # Collect all content from the frame
+        frame_content_parts = []
         
-        # Look for text box
-        text_box = frame.find(f".//{{{NAMESPACES['draw']}}}text-box")
-        if text_box is not None:
-            return self._process_text_box(text_box, style_parts)
+        # Process all direct children of the frame
+        for child in frame:
+            tag = child.tag.split('}')[-1]
+            
+            if tag == 'image':
+                frame_content_parts.append(self._process_image(child, style_parts.copy(), frame_name))
+            elif tag == 'text-box':
+                # Text box may contain figure captions - process without extra styling
+                frame_content_parts.append(self._process_text_box_content(child))
+            elif tag == 'custom-shape':
+                frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy()))
+            elif tag == 'rect':
+                frame_content_parts.append(self._process_drawing_rect(frame, child, style_parts.copy()))
+            elif tag == 'ellipse':
+                frame_content_parts.append(self._process_drawing_ellipse(frame, child, style_parts.copy()))
+            elif tag == 'line':
+                frame_content_parts.append(self._process_drawing_line(child, style_parts.copy()))
+            elif tag == 'object':
+                # OLE object - try to find replacement image
+                replacement_img = frame.find(f".//{{{NAMESPACES['draw']}}}image")
+                if replacement_img is not None:
+                    frame_content_parts.append(self._process_image(replacement_img, style_parts.copy(), frame_name))
         
-        # Look for custom shapes (drawings)
-        custom_shape = frame.find(f".//{{{NAMESPACES['draw']}}}custom-shape")
-        if custom_shape is not None:
-            return self._process_custom_shape(frame, custom_shape, style_parts)
-        
-        # Look for other drawing objects
-        rect = frame.find(f".//{{{NAMESPACES['draw']}}}rect")
-        if rect is not None:
-            return self._process_drawing_rect(frame, rect, style_parts)
-        
-        ellipse = frame.find(f".//{{{NAMESPACES['draw']}}}ellipse")
-        if ellipse is not None:
-            return self._process_drawing_ellipse(frame, ellipse, style_parts)
-        
-        line = frame.find(f".//{{{NAMESPACES['draw']}}}line")
-        if line is not None:
-            return self._process_drawing_line(line, style_parts)
-        
-        # Look for OLE objects with replacement images
-        ole_object = frame.find(f".//{{{NAMESPACES['draw']}}}object")
-        if ole_object is not None:
-            # Try to find replacement image
-            replacement_img = frame.find(f".//{{{NAMESPACES['draw']}}}image")
-            if replacement_img is not None:
-                return self._process_image(replacement_img, style_parts, frame_name)
+        # If we found content, return it
+        if frame_content_parts:
+            return '\n'.join(part for part in frame_content_parts if part)
         
         # Fallback: check for ObjectReplacements
         for name in self.resources:
@@ -523,6 +521,27 @@ class ODTConverter:
                 return self._create_image_from_resource(name, style_parts)
         
         return ""
+    
+    def _process_text_box_content(self, text_box: ET.Element) -> str:
+        """Process text box content without adding extra wrapper styling.
+        
+        This is used for text boxes that contain captions or labels,
+        where we just want the text content.
+        """
+        parts = []
+        for child in text_box:
+            tag = child.tag.split('}')[-1]
+            if tag == 'p':
+                content = self._process_inline_content(child)
+                if content.strip():
+                    # Check if this looks like a figure caption
+                    style_name = child.get(f"{{{NAMESPACES['text']}}}style-name", "")
+                    style_str = self._get_style_string(style_name)
+                    style_attr = f' style="{style_str}"' if style_str else ''
+                    parts.append(f'<p class="caption"{style_attr}>{content}</p>')
+            elif tag == 'list':
+                parts.append(self._process_list(child))
+        return '\n'.join(parts)
     
     def _process_image(self, image: ET.Element, style_parts: list, frame_name: str = "") -> str:
         """Process an image element with optional caption support."""
@@ -871,39 +890,32 @@ class ODTConverter:
     
     def _wrap_html(self, body_content: str) -> str:
         """Wrap the body content in a complete HTML document."""
-        # Collect unique font families from styles
-        font_families = set()
+        # Build font-family CSS variables for commonly used fonts
+        # Map ODF fonts to system font stacks for offline viewing
+        font_stack_map = {
+            'Liberation Serif': "'Liberation Serif', 'Times New Roman', 'Georgia', serif",
+            'Liberation Sans': "'Liberation Sans', 'Arial', 'Helvetica Neue', sans-serif",
+            'Liberation Mono': "'Liberation Mono', 'Courier New', 'Consolas', monospace",
+            'Times New Roman': "'Times New Roman', 'Georgia', serif",
+            'Arial': "'Arial', 'Helvetica Neue', sans-serif",
+            'Courier New': "'Courier New', 'Consolas', monospace",
+            'Noto Serif': "'Noto Serif', 'Times New Roman', serif",
+            'Noto Sans': "'Noto Sans', 'Arial', sans-serif",
+            'Noto Sans Mono': "'Noto Sans Mono', 'Courier New', monospace",
+            'Noto Serif CJK TC': "'Noto Serif CJK TC', 'PMingLiU', 'SimSun', serif",
+            'Noto Sans CJK TC': "'Noto Sans CJK TC', 'Microsoft JhengHei', 'SimHei', sans-serif",
+        }
+        
+        # Generate CSS custom properties for fonts used in the document
+        font_css_vars = []
         for style_props in self.styles.values():
             if 'font-family' in style_props:
                 font = style_props['font-family'].strip("'\"")
                 if ',' in font:
                     font = font.split(',')[0].strip().strip("'\"")
-                font_families.add(font)
-        
-        # Generate Google Fonts import for common fonts
-        google_fonts_css = ""
-        webfont_families = []
-        for font in font_families:
-            # Common fonts that are available on Google Fonts
-            google_font_map = {
-                'Liberation Serif': 'Noto Serif',
-                'Liberation Sans': 'Noto Sans', 
-                'Liberation Mono': 'Noto Sans Mono',
-                'Times New Roman': 'Noto Serif',
-                'Arial': 'Noto Sans',
-                'Courier New': 'Noto Sans Mono',
-                'Noto Serif CJK TC': 'Noto Serif TC',
-                'Noto Sans CJK TC': 'Noto Sans TC',
-            }
-            if font in google_font_map:
-                webfont_families.append(google_font_map[font])
-            elif font.startswith('Noto'):
-                webfont_families.append(font.replace(' ', '+'))
-        
-        if webfont_families:
-            unique_fonts = list(set(webfont_families))
-            fonts_query = '|'.join(f.replace(' ', '+') for f in unique_fonts)
-            google_fonts_css = f'@import url("https://fonts.googleapis.com/css2?family={fonts_query}&display=swap");'
+                if font in font_stack_map:
+                    # Update the style to use the full font stack
+                    style_props['font-family'] = font_stack_map[font]
         
         page_break_css = ""
         if self.show_page_breaks:
@@ -938,7 +950,6 @@ class ODTConverter:
     <meta name="generator" content="ODT to HTML Converter v2">
     <title>Converted Document</title>
     <style>
-        {google_fonts_css}
         body {{
             font-family: 'Noto Serif', 'Times New Roman', serif;
             line-height: 1.6;
@@ -1046,14 +1057,14 @@ def main():
         epilog='''
 Examples:
     python odt_to_html.py document.odt output.html
-    python odt_to_html.py document.odt output.html --page-breaks
+    python odt_to_html.py document.odt output.html --no-page-breaks
     python odt_to_html.py "path/to/my document.odt" "path/to/output.html"
         '''
     )
     parser.add_argument('input', help='Path to the input ODT file')
     parser.add_argument('output', help='Path for the output HTML file')
-    parser.add_argument('--page-breaks', action='store_true',
-                        help='Show visible page break separators in output HTML')
+    parser.add_argument('--no-page-breaks', action='store_true',
+                        help='Hide page break separators in output HTML (shown by default)')
     
     args = parser.parse_args()
     
@@ -1069,7 +1080,9 @@ Examples:
         print(f"Warning: Input file does not have .odt extension: {input_path}", file=sys.stderr)
     
     try:
-        converter = ODTConverter(str(input_path), show_page_breaks=args.page_breaks)
+        # Page breaks shown by default, --no-page-breaks disables them
+        show_page_breaks = not args.no_page_breaks
+        converter = ODTConverter(str(input_path), show_page_breaks=show_page_breaks)
         html_content = converter.convert()
         
         # Ensure output directory exists
