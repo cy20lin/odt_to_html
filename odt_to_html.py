@@ -918,6 +918,9 @@ class ODTConverter:
         tokens = path_data.split()
         svg_path = []
         
+        # Track if we are at the start of a new subpath (implies Move required)
+        is_subpath_start = True
+        
         i = 0
         while i < len(tokens):
             token = tokens[i]
@@ -929,28 +932,36 @@ class ODTConverter:
             elif token.isalpha():
                 # Command
                 cmd = token.upper()
+                
+                # Update subpath state based on command type
+                # Drawing commands reset the flag
+                # N (EndPath) sets it
+                
                 if cmd == 'M': # Move
                     svg_path.append('M')
+                    is_subpath_start = False
                 elif cmd == 'L': # Line
                     svg_path.append('L')
+                    is_subpath_start = False
                 elif cmd == 'C': # Curve (cubic)
                     svg_path.append('C')
+                    is_subpath_start = False
                 elif cmd == 'Z': # Close
                     svg_path.append('Z')
+                    # Z keeps us in the same subpath logically for next command?
+                    # Usually next command is M or N. 
+                    pass 
                 elif cmd == 'N': # End subpath (no close)
-                    # SVG doesn't have explicit End command other than Z (close). 
-                    # Z closes the path. N just means "stop drawing this subpath"? 
-                    # Browsers might auto-close or not. 'Z' is cleaner if we want close. 
-                    # But 'N' usually implies open shape.
+                    # Use this to signal that next shape should probably Move
+                    is_subpath_start = True
                     pass 
                 elif (cmd == 'X' or cmd == 'Y'): 
                     # X and Y in ODT enhanced path are essentially LineTo (L)
                     svg_path.append('L')
+                    is_subpath_start = False
                 elif cmd == 'U': # Angle Ellipse
                     # Syntax: U x y w h start-angle end-angle
                     # We need to consume 6 arguments!
-                    # And convert to SVG Arc (A) command(s).
-                    # A rx ry x-axis-rotation large-arc-flag sweep-flag x y
                     
                     if i + 6 < len(tokens):
                         # Get arguments (variables or literals)
@@ -972,42 +983,23 @@ class ODTConverter:
                         ry = h / 2
                         
                         # Convert angles to radians
-                        # ODT angles: 0 is usually 3 o'clock? Or 12?
-                        # SVG: 0 is 3 o'clock (positive x axis)
+                        start_rad = math.radians(start_deg)
+                        end_rad = math.radians(end_deg)
+                        
+                        sx = cx + rx * math.cos(start_rad)
+                        sy = cy + ry * math.sin(start_rad)
+                        
+                        # Determine entry action: Move or Line
+                        if is_subpath_start:
+                            svg_path.append('M')
+                        else:
+                            svg_path.append('L')
+                        
+                        svg_path.append(fmt(sx))
+                        svg_path.append(fmt(sy))
                         
                         # Handle full circle case
                         if abs(end_deg - start_deg) >= 360:
-                            # Draw two 180 arcs
-                            # Start at angle 0 (right)
-                            # Move to start point? U implies a segment?
-                            
-                            # We need to know where we are? M to center+rx?
-                            # Usually U follows a Move or Line.
-                            
-                            # Let's simplify: draw full ellipse as 2 arcs from current point?
-                            # Wait, U specifies center x,y.
-                            # So it is an absolute ellipse arc.
-                            
-                            # 1. Move to start point of arc?
-                            # Start point: cx + rx*cos(start), cy + ry*sin(start)
-                            
-                            start_rad = math.radians(start_deg)
-                            end_rad = math.radians(end_deg)
-                            
-                            sx = cx + rx * math.cos(start_rad)
-                            sy = cy + ry * math.sin(start_rad)
-                            
-                            # First command: If this is NOT the first command, implies line to start?
-                            # ODT spec says "If the current point is not the start point of the arc, a line is drawn..."
-                            # So L to start point.
-                            svg_path.append('L')
-                            svg_path.append(fmt(sx))
-                            svg_path.append(fmt(sy))
-                            
-                            # To draw a full ellipse, we need 2 arcs.
-                            # Point 1: cx - rx, cy (180 deg away?)
-                            # Let's just do 0 -> 180 -> 360 relative to start.
-                            
                             mid_rad = start_rad + math.pi
                             mid_x = cx + rx * math.cos(mid_rad)
                             mid_y = cy + ry * math.sin(mid_rad)
@@ -1015,7 +1007,6 @@ class ODTConverter:
                             end_x = cx + rx * math.cos(end_rad)
                             end_y = cy + ry * math.sin(end_rad)
                             
-                            # A rx ry rot large sweep x y
                             # First half
                             svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(mid_x)} {fmt(mid_y)}")
                             # Second half
@@ -1023,32 +1014,20 @@ class ODTConverter:
                             
                         else:
                             # Partial arc
-                            # L to start
-                            start_rad = math.radians(start_deg)
-                            end_rad = math.radians(end_deg)
-                            
-                            sx = cx + rx * math.cos(start_rad)
-                            sy = cy + ry * math.sin(start_rad)
-                            
                             ex = cx + rx * math.cos(end_rad)
                             ey = cy + ry * math.sin(end_rad)
                             
-                            svg_path.append('L')
-                            svg_path.append(fmt(sx))
-                            svg_path.append(fmt(sy))
-                            
                             # Arc
-                            # large-arc-flag: 1 if angle > 180
                             delta_deg = end_deg - start_deg
                             large_arc = 1 if abs(delta_deg) > 180 else 0
                             sweep = 1 # Clockwise usually? ODT might use degrees. Positive = clockwise?
-                            # 0-360 in ODT is usually Clockwise from X-axis?
-                            # SVG angles: positive is clockwise (Y down).
                             
                             svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 {large_arc} {sweep} {fmt(ex)} {fmt(ey)}")
 
                         # Skip the processed tokens
                         i += 6 
+                        
+                        is_subpath_start = False
                         
                         # Do NOT append U itself
                         # Continue loop
