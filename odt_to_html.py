@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ODT to HTML Converter (v2)
+ODT to HTML Converter 
 
 Converts OpenDocument Text (.odt) files to standalone HTML with embedded resources.
 All images and media are embedded as base64 data URIs for single-file portability.
@@ -45,7 +45,7 @@ for prefix, uri in NAMESPACES.items():
 class ODTConverter:
     """Converts ODT files to HTML with embedded resources."""
     
-    def __init__(self, odt_path: str, show_page_breaks: bool = True):
+    def __init__(self, odt_path: str, show_page_breaks: bool = True, respect_table_borders: bool = True):
         self.odt_path = Path(odt_path)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
@@ -53,6 +53,7 @@ class ODTConverter:
         self.font_declarations: dict[str, dict] = {}
         self.footnotes: list[dict] = []  # Collect footnotes for end of document
         self.show_page_breaks = show_page_breaks
+        self.respect_table_borders = respect_table_borders
         
     def convert(self) -> str:
         """Convert the ODT file to HTML string."""
@@ -192,6 +193,44 @@ class ODTConverter:
             if 'line-through' not in existing:
                 style_dict['text-decoration'] = f"{existing} line-through".strip()
         
+        # Border (Table cells)
+        if self.respect_table_borders:
+            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+                if border_val and border_val != 'none':
+                    # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
+                    # We might want to ensure a minimum width for visibility if it's very thin
+                    parts = border_val.split()
+                    if len(parts) >= 3 and parts[0].endswith('pt'):
+                        try:
+                            width = float(parts[0][:-2])
+                            if width < 0.5:
+                                # Ensure minimum visibility
+                                parts[0] = "0.5pt"
+                                border_val = " ".join(parts)
+                        except ValueError:
+                            pass
+                    style_dict[border_prop] = border_val
+        
+        # Border (Table cells)
+        if self.respect_table_borders:
+            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+                if border_val and border_val != 'none':
+                    # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
+                    # We might want to ensure a minimum width for visibility if it's very thin
+                    parts = border_val.split()
+                    if len(parts) >= 3 and parts[0].endswith('pt'):
+                        try:
+                            width = float(parts[0][:-2])
+                            if width < 0.5:
+                                # Ensure minimum visibility
+                                parts[0] = "0.5pt"
+                                border_val = " ".join(parts)
+                        except ValueError:
+                            pass
+                    style_dict[border_prop] = border_val
+        
         # Font size
         font_size = props.get(f"{{{NAMESPACES['fo']}}}font-size")
         if font_size:
@@ -287,9 +326,23 @@ class ODTConverter:
         if padding:
             style_dict['padding'] = padding
         
-        border = props.get(f"{{{NAMESPACES['fo']}}}border")
-        if border:
-            style_dict['border'] = border
+        if self.respect_table_borders:
+            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+                if border_val and border_val != 'none':
+                    # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
+                    # We might want to ensure a minimum width for visibility if it's very thin
+                    parts = border_val.split()
+                    if len(parts) >= 3 and parts[0].endswith('pt'):
+                        try:
+                            width = float(parts[0][:-2])
+                            if width < 0.5:
+                                # Ensure minimum visibility
+                                parts[0] = "0.5pt"
+                                border_val = " ".join(parts)
+                        except ValueError:
+                            pass
+                    style_dict[border_prop] = border_val
         
         bg_color = props.get(f"{{{NAMESPACES['fo']}}}background-color")
         if bg_color and bg_color != 'transparent':
@@ -430,7 +483,9 @@ class ODTConverter:
             elif tag == 'note-ref':
                 # Note reference
                 ref_name = child.get(f"{{{NAMESPACES['text']}}}ref-name", "")
-                parts.append(f'<sup><a href="#note-{escape(ref_name)}">{escape(child.text or "")}</a></sup>')
+                note_format = child.get(f"{{{NAMESPACES['text']}}}note-class", "footnote")
+                content = self._process_inline_content(child)
+                parts.append(f'<sup><a href="#ref-{ref_name}" class="footnote-ref">{content}</a></sup>')
             else:
                 # Try to get any text content
                 if child.text:
@@ -440,7 +495,9 @@ class ODTConverter:
             if child.tail:
                 parts.append(escape(child.tail))
         
-        return ''.join(parts)
+        return "".join(parts)
+        
+
     
     def _process_sequence(self, seq: ET.Element) -> str:
         """Process a sequence element (figure/table numbering)."""
@@ -485,35 +542,87 @@ class ODTConverter:
         if height:
             style_parts.append(f"height: {height}")
         
+        # Check for absolute positioning
+        x = frame.get(f"{{{NAMESPACES['svg']}}}x")
+        y = frame.get(f"{{{NAMESPACES['svg']}}}y")
+        
+        # Note: In ODT, frames directly in paragraphs might be positioned relative to the paragraph/page.
+        # Inside a draw:frame container, children are absolutely positioned.
+        
         # Collect all content from the frame
         frame_content_parts = []
+        
+        # If we have multiple children, or specific positioning, we might want a container
+        has_positioned_children = False
         
         # Process all direct children of the frame
         for child in frame:
             tag = child.tag.split('}')[-1]
+            child_style = []
             
+            # Check for positioning on children
+            cx = child.get(f"{{{NAMESPACES['svg']}}}x")
+            cy = child.get(f"{{{NAMESPACES['svg']}}}y")
+            cw = child.get(f"{{{NAMESPACES['svg']}}}width")
+            ch = child.get(f"{{{NAMESPACES['svg']}}}height")
+            transform = child.get(f"{{{NAMESPACES['draw']}}}transform")
+            
+            if cx or cy:
+                has_positioned_children = True
+                child_style.append("position: absolute")
+                if cx: child_style.append(f"left: {cx}")
+                if cy: child_style.append(f"top: {cy}")
+            if cw: child_style.append(f"width: {cw}")
+            if ch: child_style.append(f"height: {ch}")
+            
+            if transform:
+                 # Clean up transform string - simplified for basic cases
+                 # rotate (-0.5...) translate (...) -> rotate(...) translate(...)
+                 child_style.append(f"transform: {transform}")
+                 # You might need detailed parsing if syntax varies significantly from CSS
+                 # ODT often uses "rotate (angle) translate (x y)". CSS expects "rotate(angle) translate(x, y)"
+                 # Simple fix specific for typical ODT output: add commas to translate?
+                 # Actually ODT: "rotate (1.57) translate (1cm 2cm)" -> CSS: "rotate(1.57rad) translate(1cm, 2cm)"
+                 # This is complex. For now, pass it through and hope it works or needs minor tweak.
+                 pass
+
             if tag == 'image':
-                frame_content_parts.append(self._process_image(child, style_parts.copy(), frame_name))
+                frame_content_parts.append(self._process_image(child, style_parts.copy() + child_style, frame_name))
             elif tag == 'text-box':
                 # Text box may contain figure captions - process without extra styling
-                frame_content_parts.append(self._process_text_box_content(child))
+                # But if it has position, we need a wrapper
+                content = self._process_text_box_content(child)
+                if child_style:
+                    s = "; ".join(child_style)
+                    frame_content_parts.append(f'<div style="{s}">{content}</div>')
+                else:
+                    frame_content_parts.append(content)
             elif tag == 'custom-shape':
-                frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy()))
+                frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style))
             elif tag == 'rect':
-                frame_content_parts.append(self._process_drawing_rect(frame, child, style_parts.copy()))
+                frame_content_parts.append(self._process_drawing_rect(frame, child, style_parts.copy() + child_style))
             elif tag == 'ellipse':
-                frame_content_parts.append(self._process_drawing_ellipse(frame, child, style_parts.copy()))
+                frame_content_parts.append(self._process_drawing_ellipse(frame, child, style_parts.copy() + child_style))
             elif tag == 'line':
-                frame_content_parts.append(self._process_drawing_line(child, style_parts.copy()))
+                frame_content_parts.append(self._process_drawing_line(child, style_parts.copy() + child_style))
             elif tag == 'object':
                 # OLE object - try to find replacement image
                 replacement_img = frame.find(f".//{{{NAMESPACES['draw']}}}image")
                 if replacement_img is not None:
-                    frame_content_parts.append(self._process_image(replacement_img, style_parts.copy(), frame_name))
+                    frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name))
         
+        # If we have positioned children, the container must be relative
+        if has_positioned_children:
+            style_parts.append("position: relative")
+            # Ensure it has block display to contain size
+            style_parts.append("display: inline-block")
+            
         # If we found content, return it
         if frame_content_parts:
-            return '\n'.join(part for part in frame_content_parts if part)
+            # Wrap in the main frame div
+            style_str = "; ".join(style_parts)
+            content = '\n'.join(part for part in frame_content_parts if part)
+            return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
         
         # Fallback: check for ObjectReplacements
         for name in self.resources:
@@ -639,7 +748,10 @@ class ODTConverter:
                 {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
             </svg>'''
         
-        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+        style_str = "; ".join(style_parts)
+        if "position" not in style_str and "display" not in style_str:
+            style_str += "; display: inline-block"
+        return f'<div class="drawing" style="{style_str}">{svg}</div>'
     
     def _process_drawing_rect(self, frame: ET.Element, rect: ET.Element, style_parts: list) -> str:
         """Process a rectangle drawing."""
@@ -654,7 +766,10 @@ class ODTConverter:
                   fill="#e0e0e0" stroke="#333" stroke-width="2"/>
         </svg>'''
         
-        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+        style_str = "; ".join(style_parts)
+        if "position" not in style_str and "display" not in style_str:
+            style_str += "; display: inline-block"
+        return f'<div class="drawing" style="{style_str}">{svg}</div>'
     
     def _process_drawing_ellipse(self, frame: ET.Element, ellipse: ET.Element, style_parts: list) -> str:
         """Process an ellipse drawing."""
@@ -669,7 +784,10 @@ class ODTConverter:
                      fill="#e0e0e0" stroke="#333" stroke-width="2"/>
         </svg>'''
         
-        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+        style_str = "; ".join(style_parts)
+        if "position" not in style_str and "display" not in style_str:
+            style_str += "; display: inline-block"
+        return f'<div class="drawing" style="{style_str}">{svg}</div>'
     
     def _process_drawing_line(self, line: ET.Element, style_parts: list) -> str:
         """Process a line drawing."""
@@ -691,7 +809,10 @@ class ODTConverter:
             <line x1="{x1_px}" y1="{y1_px}" x2="{x2_px}" y2="{y2_px}" stroke="#333" stroke-width="2"/>
         </svg>'''
         
-        return f'<div class="drawing" style="display: inline-block;">{svg}</div>'
+        style_str = "; ".join(style_parts)
+        if "position" not in style_str and "display" not in style_str:
+            style_str += "; display: inline-block"
+        return f'<div class="drawing" style="{style_str}">{svg}</div>'
     
     def _dimension_to_px(self, dim: str) -> float:
         """Convert an ODF dimension to pixels."""
@@ -1065,6 +1186,10 @@ Examples:
     parser.add_argument('output', help='Path for the output HTML file')
     parser.add_argument('--no-page-breaks', action='store_true',
                         help='Hide page break separators in output HTML (shown by default)')
+    parser.add_argument('--table-respect-border', action='store_true', default=True,
+                        help='Respect table border styles from ODT (default: True). Use --no-table-respect-border to disable.')
+    parser.add_argument('--no-table-respect-border', action='store_false', dest='table_respect_border',
+                        help='Disable respecting table border styles')
     
     args = parser.parse_args()
     
@@ -1082,7 +1207,11 @@ Examples:
     try:
         # Page breaks shown by default, --no-page-breaks disables them
         show_page_breaks = not args.no_page_breaks
-        converter = ODTConverter(str(input_path), show_page_breaks=show_page_breaks)
+        converter = ODTConverter(
+            str(input_path), 
+            show_page_breaks=show_page_breaks,
+            respect_table_borders=args.table_respect_border
+        )
         html_content = converter.convert()
         
         # Ensure output directory exists

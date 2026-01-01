@@ -119,6 +119,9 @@ def create_sample_odt(output_path: str) -> None:
             <style:paragraph-properties fo:text-align="center"/>
             <style:text-properties fo:font-style="italic" fo:font-size="10pt"/>
         </style:style>
+        <style:style style:name="TableThinBorder.A1" style:family="table-cell">
+            <style:table-cell-properties fo:border="0.05pt solid #000000" fo:padding="0.1cm"/>
+        </style:style>
     </office:styles>
 </office:document-styles>'''
 
@@ -251,6 +254,16 @@ def create_sample_odt(output_path: str) -> None:
                 </table:table-row>
             </table:table>
             
+            <text:p text:style-name="Standard">Table with thin borders:</text:p>
+            <table:table table:name="Table2">
+                <table:table-column/>
+                <table:table-row>
+                    <table:table-cell table:style-name="TableThinBorder.A1">
+                        <text:p>Thin Border Cell</text:p>
+                    </table:table-cell>
+                </table:table-row>
+            </table:table>
+            
             <!-- Heading 2 -->
             <text:h text:style-name="Heading_2" text:outline-level="2">Images and Figures</text:h>
             
@@ -274,6 +287,21 @@ def create_sample_odt(output_path: str) -> None:
                         <draw:enhanced-geometry draw:type="rectangle"/>
                         <text:p>Text in shape</text:p>
                     </draw:custom-shape>
+                </draw:frame>
+            </text:p>
+            
+            <!-- Complex positioned frame (like Figure 3) -->
+            <text:p text:style-name="Standard">Below is a complex positioned frame:</text:p>
+            <text:p text:style-name="P1">
+                <draw:frame draw:name="ComplexFrame" svg:width="5cm" svg:height="5cm">
+                     <draw:custom-shape svg:x="1cm" svg:y="1cm" svg:width="1cm" svg:height="1cm">
+                        <draw:enhanced-geometry draw:type="ellipse"/>
+                        <text:p>Circle</text:p>
+                     </draw:custom-shape>
+                     <draw:custom-shape svg:x="3cm" svg:y="2cm" svg:width="1cm" svg:height="1cm" draw:transform="rotate (0.5) translate (0cm 0cm)">
+                        <draw:enhanced-geometry draw:type="rectangle"/>
+                        <text:p>Rect</text:p>
+                     </draw:custom-shape>
                 </draw:frame>
             </text:p>
             

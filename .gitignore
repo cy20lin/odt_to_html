@@ -3,7 +3,7 @@
 **/*.pyc
 .*
 !.gitignore
-sample*
+sample*/
 stash/
 tmp/
 out/
