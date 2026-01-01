@@ -357,17 +357,31 @@ class ODTConverter:
         """Extract graphic/drawing properties."""
         # Stroke/border color
         stroke = props.get(f"{{{NAMESPACES['svg']}}}stroke-color")
-        if stroke:
+        stroke_style = props.get(f"{{{NAMESPACES['draw']}}}stroke")
+        
+        if stroke_style == 'none':
+             style_dict['border'] = 'none' # standard css for div
+             style_dict['stroke'] = 'none' # for svg
+        elif stroke:
             style_dict['border-color'] = stroke
+            style_dict['stroke'] = stroke
         
         stroke_width = props.get(f"{{{NAMESPACES['svg']}}}stroke-width")
         if stroke_width:
             style_dict['border-width'] = stroke_width
+            style_dict['stroke-width'] = stroke_width
         
         # Fill color
+        fill = props.get(f"{{{NAMESPACES['draw']}}}fill")
         fill_color = props.get(f"{{{NAMESPACES['draw']}}}fill-color")
-        if fill_color:
+        
+        if fill == 'none':
+            style_dict['background-color'] = 'transparent'
+            style_dict['fill'] = 'none'
+        elif fill_color:
             style_dict['background-color'] = fill_color
+            style_dict['fill'] = fill_color
+
     
     def _get_style_string(self, style_name: str) -> str:
         """Get CSS style string for a named style."""
@@ -713,9 +727,15 @@ class ODTConverter:
         style_name = shape.get(f"{{{NAMESPACES['draw']}}}style-name", "")
         shape_style = self.styles.get(style_name, {})
         
-        fill_color = shape_style.get('background-color', '#e0e0e0')
-        stroke_color = shape_style.get('border-color', '#333333')
-        stroke_width = shape_style.get('border-width', '1pt')
+        fill_color = shape_style.get('fill', '#e0e0e0' if 'fill' not in shape_style else 'none')
+        stroke_color = shape_style.get('stroke', '#333333' if 'stroke' not in shape_style else 'none')
+        stroke_width = shape_style.get('stroke-width', '1pt')
+        
+        # Override defaults if explicit NONE found in style dict (from fill="none")
+        if shape_style.get('fill') == 'none':
+            fill_color = 'none'
+        if shape_style.get('stroke') == 'none':
+            stroke_color = 'none'
         
         # ODT custom shapes usually have a viewBox coordinate system (e.g. 0 0 21600 21600)
         enhanced_geom = shape.find(f".//{{{NAMESPACES['draw']}}}enhanced-geometry")
@@ -819,44 +839,32 @@ class ODTConverter:
                 # Note: viewBox is min-x min-y width height. 
                 # ODT usage of 'right' usually implies width if starting at 0.
         
+        # Helper for if function
+        def iff(c, t, f):
+            return t if c else f
+
         # Process equations in order
         for eq in geometry.findall(f".//{{{NAMESPACES['draw']}}}equation"):
             name = eq.get(f"{{{NAMESPACES['draw']}}}name")
             formula = eq.get(f"{{{NAMESPACES['draw']}}}formula")
             if name and formula:
                 # Sanitize and convert formula to python expression
-                # ODT formulas use: ?f0 (ref to variable), $0 (modifier), arithmetic, sin, cos, etc.
-                # standard arithmetic: + - * /
-                # logical: if(cond, true, false) - python: true if cond else false
-                
-                # Replace references ?name with name
-                # variables are stored in dict, use local lookup
-                
-                # Replace ?name with variables['name']
-                # We need to be careful with order.
-                
-                # 1. Replace ?fxxx with variables['fxxx'] logic
-                #    But simpler to just eval with a context.
-                #    We rename keys in context to match query names if possible, but ? is not valid python ID.
-                #    So we replace '?name' with 'var_name' in formula string.
                 
                 expr = formula
                 
-                # Replace $0, $1... with var_0, var_1...
+                # Replace $0, $1... with mod_0, mod_1...
                 expr = re.sub(r'\$(\d+)', r'mod_\1', expr)
                 
                 # Replace ?name with var_name
                 expr = re.sub(r'\?([a-zA-Z0-9]+)', r'var_\1', expr)
                 
-                # Replace logic operators check
-                # 'if' in ODT is 'if(c, t, f)'
-                # This regex replace is tricky for nested, but simple cases work.
-                # For now assume mostly arithmetic.
+                # Replace 'if(' with 'iff('
+                expr = expr.replace('if(', 'iff(')
                 
                 # Allowed globals
                 safe_locals = {'math': math, 'sin': math.sin, 'cos': math.cos, 
                                'tan': math.tan, 'sqrt': math.sqrt, 'abs': abs,
-                               'min': min, 'max': max, 'pi': math.pi}
+                               'min': min, 'max': max, 'pi': math.pi, 'iff': iff}
                 
                 # Add current variables to locals with mapped names
                 current_locals = safe_locals.copy()
@@ -865,6 +873,9 @@ class ODTConverter:
                         current_locals[f'mod_{k[1:]}'] = v
                     else:
                         current_locals[f'var_{k}'] = v
+                        # Also expose standard constants directly (left, top, right, bottom)
+                        if k in ['left', 'top', 'right', 'bottom', 'width', 'height']:
+                             current_locals[k] = v
                 
                 try:
                     res = eval(expr, {"__builtins__": {}}, current_locals)
@@ -911,6 +922,7 @@ class ODTConverter:
         while i < len(tokens):
             token = tokens[i]
             if token.startswith('?') or token.startswith('$'):
+                 # Check if this token is actually a command that got mixed up? Unlikely if space sep.
                  # Direct value not command
                  val = variables.get(token[1:] if token.startswith('?') else token, 0)
                  svg_path.append(fmt(val))
@@ -925,49 +937,124 @@ class ODTConverter:
                     svg_path.append('C')
                 elif cmd == 'Z': # Close
                     svg_path.append('Z')
-                elif cmd == 'N': # End subpath / No fill? 
-                    # SVG doesn't have N. 'Z' closes. 'N' just ends?
+                elif cmd == 'N': # End subpath (no close)
+                    # SVG doesn't have explicit End command other than Z (close). 
+                    # Z closes the path. N just means "stop drawing this subpath"? 
+                    # Browsers might auto-close or not. 'Z' is cleaner if we want close. 
+                    # But 'N' usually implies open shape.
                     pass 
-                elif cmd == 'X': # Segment LineTo X?
-                    # ODT "X x y" -> L x y? No, X is usually "horizontal line to" in SVG (H), 
-                    # But in ODT docs: "X coordinate" -> L (x current-y)? 
-                    # Actually ODT spec says: X = "line-to-x", Y = "line-to-y" (like H and V)
-                    # BUT wait, sample says "X 0 ?f8". That looks like X and Y coords.
-                    # Looking at sample: "M ?f7 0 X 0 ?f8" -> Move to f7,0. Then X ...?
-                    # "X" command in ODT: "The 'X' command draws a line from the current point to a point (x, y)."
-                    # Wait, no. "L x y" is line to. 
-                    # Let's check ODF spec. 
-                    # "U, T, ..."?
-                    # Actually standard ODF enhanced geometry:
-                    # M x y : moveto
-                    # L x y : lineto
-                    # C x1 y1 x2 y2 x y : cubic 
-                    # A ... : arc
-                    # Z : closepath
-                    # N : endpath (no close)
-                    #
-                    # Sample has "X", "Y"?
-                    # Sample: "M ?f7 0 X 0 ?f8 L 0 ?f9 Y ?f7 21600 L ?f10 21600 X 21600 ?f9 L 21600 ?f8 Y ?f10 0 Z N"
-                    # This looks like custom extension or I am misremembering commands.
-                    # LibreOffice ODF: X and Y are often mapped to simple Lines if they have 2 args?
-                    # Let's look at the tokens following X.
-                    # "X 0 ?f8" -> 2 numbers. "Y ?f7 21600" -> 2 numbers.
-                    # If X and Y are just synonyms for L (LineTo), it makes sense.
-                    # Let's assume X = L and Y = L for now unless single arg.
-                    
+                elif (cmd == 'X' or cmd == 'Y'): 
+                    # X and Y in ODT enhanced path are essentially LineTo (L)
                     svg_path.append('L')
+                elif cmd == 'U': # Angle Ellipse
+                    # Syntax: U x y w h start-angle end-angle
+                    # We need to consume 6 arguments!
+                    # And convert to SVG Arc (A) command(s).
+                    # A rx ry x-axis-rotation large-arc-flag sweep-flag x y
                     
-                elif cmd == 'Y':
-                    svg_path.append('L')
-                    
-                elif cmd == 'U': # Angle ellipse to?
-                    # "U x y w h start-angle end-angle"
-                    # Mapping to Arc (A) is hard without logic.
-                    # For V1, maybe ignore or try to draw line?
-                    # If we don't handle it, SVG breaks.
-                    # Just L (LineTo) first 2 coords?
-                    svg_path.append('L') 
-                
+                    if i + 6 < len(tokens):
+                        # Get arguments (variables or literals)
+                        args = []
+                        for k in range(1, 7):
+                            tk = tokens[i+k]
+                            val = 0.0
+                            if tk.startswith('?') or tk.startswith('$'):
+                                val = float(variables.get(tk[1:] if tk.startswith('?') else tk, 0))
+                            else:
+                                try:
+                                    val = float(tk)
+                                except:
+                                    pass
+                            args.append(val)
+                        
+                        cx, cy, w, h, start_deg, end_deg = args
+                        rx = w / 2
+                        ry = h / 2
+                        
+                        # Convert angles to radians
+                        # ODT angles: 0 is usually 3 o'clock? Or 12?
+                        # SVG: 0 is 3 o'clock (positive x axis)
+                        
+                        # Handle full circle case
+                        if abs(end_deg - start_deg) >= 360:
+                            # Draw two 180 arcs
+                            # Start at angle 0 (right)
+                            # Move to start point? U implies a segment?
+                            
+                            # We need to know where we are? M to center+rx?
+                            # Usually U follows a Move or Line.
+                            
+                            # Let's simplify: draw full ellipse as 2 arcs from current point?
+                            # Wait, U specifies center x,y.
+                            # So it is an absolute ellipse arc.
+                            
+                            # 1. Move to start point of arc?
+                            # Start point: cx + rx*cos(start), cy + ry*sin(start)
+                            
+                            start_rad = math.radians(start_deg)
+                            end_rad = math.radians(end_deg)
+                            
+                            sx = cx + rx * math.cos(start_rad)
+                            sy = cy + ry * math.sin(start_rad)
+                            
+                            # First command: If this is NOT the first command, implies line to start?
+                            # ODT spec says "If the current point is not the start point of the arc, a line is drawn..."
+                            # So L to start point.
+                            svg_path.append('L')
+                            svg_path.append(fmt(sx))
+                            svg_path.append(fmt(sy))
+                            
+                            # To draw a full ellipse, we need 2 arcs.
+                            # Point 1: cx - rx, cy (180 deg away?)
+                            # Let's just do 0 -> 180 -> 360 relative to start.
+                            
+                            mid_rad = start_rad + math.pi
+                            mid_x = cx + rx * math.cos(mid_rad)
+                            mid_y = cy + ry * math.sin(mid_rad)
+                            
+                            end_x = cx + rx * math.cos(end_rad)
+                            end_y = cy + ry * math.sin(end_rad)
+                            
+                            # A rx ry rot large sweep x y
+                            # First half
+                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(mid_x)} {fmt(mid_y)}")
+                            # Second half
+                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(end_x)} {fmt(end_y)}")
+                            
+                        else:
+                            # Partial arc
+                            # L to start
+                            start_rad = math.radians(start_deg)
+                            end_rad = math.radians(end_deg)
+                            
+                            sx = cx + rx * math.cos(start_rad)
+                            sy = cy + ry * math.sin(start_rad)
+                            
+                            ex = cx + rx * math.cos(end_rad)
+                            ey = cy + ry * math.sin(end_rad)
+                            
+                            svg_path.append('L')
+                            svg_path.append(fmt(sx))
+                            svg_path.append(fmt(sy))
+                            
+                            # Arc
+                            # large-arc-flag: 1 if angle > 180
+                            delta_deg = end_deg - start_deg
+                            large_arc = 1 if abs(delta_deg) > 180 else 0
+                            sweep = 1 # Clockwise usually? ODT might use degrees. Positive = clockwise?
+                            # 0-360 in ODT is usually Clockwise from X-axis?
+                            # SVG angles: positive is clockwise (Y down).
+                            
+                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 {large_arc} {sweep} {fmt(ex)} {fmt(ey)}")
+
+                        # Skip the processed tokens
+                        i += 6 
+                        
+                        # Do NOT append U itself
+                        # Continue loop
+                        i += 1
+                        continue
+
                 else:
                     # Pass through unknown commands if single letter, might break
                     pass
