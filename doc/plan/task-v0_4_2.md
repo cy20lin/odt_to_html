@@ -1,0 +1,21 @@
+# ODT Drawing Object Support
+
+- [x] Analyze existing codebase and sample data <!-- id: 0 -->
+    - [x] Read `odt_to_html.py` <!-- id: 1 -->
+    - [x] Read `odf_to_png.py` <!-- id: 2 -->
+    - [x] Read `html_to_png.py` <!-- id: 3 -->
+    - [x] Unzip and inspect `sample_test_drawing.odt` (specifically `content.xml` and `styles.xml`) <!-- id: 4 -->
+- [x] Design ODT <draw> to SVG mapping <!-- id: 5 -->
+    - [x] Create `implementation_plan.md` <!-- id: 6 -->
+    - [x] Map `draw:frame` to `<svg>` container or group <!-- id: 7 -->
+    - [x] Map basic shapes (`draw:rect`, `draw:line`, `draw:circle`) to SVG equivalents <!-- id: 8 -->
+    - [x] Map `draw:image` to SVG `<image>` <!-- id: 9 -->
+    - [x] Map `draw:custom-shape` to SVG `path` (if complex) <!-- id: 10 -->
+- [x] Implement conversion logic in `odt_to_html.py` <!-- id: 11 -->
+    - [x] Add SVG namespace handling <!-- id: 12 -->
+    - [x] Implement parsing of draw elements <!-- id: 13 -->
+    - [x] Implement SVG generation <!-- id: 14 -->
+- [x] Verify implementation <!-- id: 15 -->
+    - [x] Run `test_equation_solver.py` <!-- id: 16 -->
+    - [x] Run `odt_to_html.py` on sample <!-- id: 17 -->
+    - [x] Inspect generated HTML for shapes <!-- id: 18 -->

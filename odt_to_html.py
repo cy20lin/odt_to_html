@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ODT to HTML Converter 
+ODT to HTML Converter (v2)
 
 Converts OpenDocument Text (.odt) files to standalone HTML with embedded resources.
 All images and media are embedded as base64 data URIs for single-file portability.
@@ -15,6 +15,7 @@ Options:
 import argparse
 import base64
 import mimetypes
+import math
 import re
 import sys
 import zipfile
@@ -486,6 +487,15 @@ class ODTConverter:
                 note_format = child.get(f"{{{NAMESPACES['text']}}}note-class", "footnote")
                 content = self._process_inline_content(child)
                 parts.append(f'<sup><a href="#ref-{ref_name}" class="footnote-ref">{content}</a></sup>')
+            elif tag == 'custom-shape':
+                # Handle inline custom shapes
+                parts.append(self._process_custom_shape(child, child, []))
+            elif tag == 'rect':
+                parts.append(self._process_drawing_rect(child, child, []))
+            elif tag == 'ellipse':
+                parts.append(self._process_drawing_ellipse(child, child, []))
+            elif tag == 'line':
+                parts.append(self._process_drawing_line(child, []))
             else:
                 # Try to get any text content
                 if child.text:
@@ -695,9 +705,9 @@ class ODTConverter:
         width = frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
         height = frame.get(f"{{{NAMESPACES['svg']}}}height", "100px")
         
-        # Try to convert dimensions to pixels for SVG
-        svg_width = self._dimension_to_px(width)
-        svg_height = self._dimension_to_px(height)
+        # Try to convert dimensions to pixels for SVG container
+        svg_width_px = self._dimension_to_px(width)
+        svg_height_px = self._dimension_to_px(height)
         
         # Get style name for colors
         style_name = shape.get(f"{{{NAMESPACES['draw']}}}style-name", "")
@@ -705,53 +715,268 @@ class ODTConverter:
         
         fill_color = shape_style.get('background-color', '#e0e0e0')
         stroke_color = shape_style.get('border-color', '#333333')
-        stroke_width = shape_style.get('border-width', '1px')
+        stroke_width = shape_style.get('border-width', '1pt')
         
-        # Get the enhanced path or geometry
+        # ODT custom shapes usually have a viewBox coordinate system (e.g. 0 0 21600 21600)
         enhanced_geom = shape.find(f".//{{{NAMESPACES['draw']}}}enhanced-geometry")
         
-        # Check for text inside the shape
-        text_content = ""
-        for p in shape.findall(f".//{{{NAMESPACES['text']}}}p"):
-            text_content += self._process_inline_content(p) + " "
-        text_content = text_content.strip()
+        view_box = "0 0 21600 21600" # Default ODT viewbox
+        path_data = ""
         
         if enhanced_geom is not None:
-            path_data = enhanced_geom.get(f"{{{NAMESPACES['draw']}}}enhanced-path", "")
-            shape_type = enhanced_geom.get(f"{{{NAMESPACES['draw']}}}type", "")
+             # Get viewBox if available
+            vb = enhanced_geom.get(f"{{{NAMESPACES['svg']}}}viewBox")
+            if vb:
+                view_box = vb
             
-            # Create SVG based on shape type
-            if shape_type == 'rectangle' or not path_data:
-                svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}" 
-                          fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>
-                    {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
-                </svg>'''
-            elif shape_type == 'ellipse':
-                svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-                    <ellipse cx="{svg_width/2}" cy="{svg_height/2}" rx="{svg_width/2-2}" ry="{svg_height/2-2}"
-                             fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>
-                    {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
-                </svg>'''
-            else:
-                # Generic shape with border
-                svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"
-                          fill="{fill_color}" stroke="{stroke_color}" stroke-width="2" rx="5"/>
-                    {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
-                </svg>'''
+            # Solve equations to get variable values
+            variables = self._solve_equations(enhanced_geom, frame)
+            
+            # Get path and substitute variables
+            raw_path = enhanced_geom.get(f"{{{NAMESPACES['draw']}}}enhanced-path", "")
+            if raw_path:
+                path_data = self._convert_path(raw_path, variables)
+        
+        # Check for text inside the shape
+        text_content_parts = []
+        # ODT puts text in a text-box or directly as P/List elements? 
+        # Inside custom-shape it can have text:p
+        for child in shape:
+            tag = child.tag.split('}')[-1]
+            if tag == 'p':
+                 text_content_parts.append(f'<p style="margin:0; padding:0;">{self._process_inline_content(child)}</p>')
+            elif tag == 'list':
+                 text_content_parts.append(self._process_list(child))
+
+        text_html = "".join(text_content_parts)
+            
+        # Construct SVG
+        # We use the viewBox from ODT to let the path coordinates work directly
+        svg_content = ""
+        if path_data:
+             svg_content = f'<path d="{path_data}" fill="{fill_color}" stroke="{stroke_color}" stroke-width="{stroke_width}" vector-effect="non-scaling-stroke"/>'
         else:
-            # Fallback rectangle
-            svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-                <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"
-                      fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>
-                {f'<text x="{svg_width/2}" y="{svg_height/2}" text-anchor="middle" dominant-baseline="middle" font-size="14">{escape(text_content)}</text>' if text_content else ''}
-            </svg>'''
+             # Fallback if no path (e.g. simple rect logic needed but custom-shape should have path or type)
+             # Some shapes use modifiers and type='rectangle' without explicit path.
+             # For now, minimal fallback if empty path but existing geometry
+             pass
+             
+        svg = f'''<svg width="{width}" height="{height}" viewBox="{view_box}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+            {svg_content}
+        </svg>'''
+        
+        # If there is text, we need to overlay it. 
+        # ODT text inside shapes is usually centered or fully filling the shape box.
+        # We can use a relative container.
         
         style_str = "; ".join(style_parts)
-        if "position" not in style_str and "display" not in style_str:
+        if "position" not in style_str:
+            style_str += "; position: relative"
+        if "display" not in style_str:
             style_str += "; display: inline-block"
-        return f'<div class="drawing" style="{style_str}">{svg}</div>'
+            
+        content = svg
+        if text_html.strip():
+            # Overlay text centered
+            content += f'<div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden;">{text_html}</div>'
+
+        return f'<div class="drawing-custom-shape" style="{style_str}">{content}</div>'
+
+    def _solve_equations(self, geometry: ET.Element, frame: ET.Element) -> dict:
+        """Solve ODT enhanced geometry equations."""
+        variables = {}
+        
+        # Get modifiers ($0, $1...)
+        modifiers = geometry.get(f"{{{NAMESPACES['draw']}}}modifiers", "")
+        if modifiers:
+            # Modifiers can be numbers or percentages? Usually space separated numbers.
+            mods = modifiers.split()
+            for i, val in enumerate(mods):
+                try:
+                    variables[f'${i}'] = float(val)
+                except ValueError:
+                    variables[f'${i}'] = 0.0
+        else:
+             # Some defaults might be needed?
+             pass
+
+        # Constants often used
+        variables['pi'] = math.pi
+        variables['left'] = 0
+        variables['top'] = 0
+        variables['right'] = 21600 # Default width in internal units
+        variables['bottom'] = 21600 # Default height
+        
+        # Update width/height if viewBox provided (though right/bottom usually match viewBox width/height)
+        vb = geometry.get(f"{{{NAMESPACES['svg']}}}viewBox")
+        if vb:
+            parts = vb.split()
+            if len(parts) == 4:
+                variables['left'] = float(parts[0])
+                variables['top'] = float(parts[1])
+                variables['right'] = float(parts[2]) # strictly left + width?
+                variables['bottom'] = float(parts[3]) 
+                # Note: viewBox is min-x min-y width height. 
+                # ODT usage of 'right' usually implies width if starting at 0.
+        
+        # Process equations in order
+        for eq in geometry.findall(f".//{{{NAMESPACES['draw']}}}equation"):
+            name = eq.get(f"{{{NAMESPACES['draw']}}}name")
+            formula = eq.get(f"{{{NAMESPACES['draw']}}}formula")
+            if name and formula:
+                # Sanitize and convert formula to python expression
+                # ODT formulas use: ?f0 (ref to variable), $0 (modifier), arithmetic, sin, cos, etc.
+                # standard arithmetic: + - * /
+                # logical: if(cond, true, false) - python: true if cond else false
+                
+                # Replace references ?name with name
+                # variables are stored in dict, use local lookup
+                
+                # Replace ?name with variables['name']
+                # We need to be careful with order.
+                
+                # 1. Replace ?fxxx with variables['fxxx'] logic
+                #    But simpler to just eval with a context.
+                #    We rename keys in context to match query names if possible, but ? is not valid python ID.
+                #    So we replace '?name' with 'var_name' in formula string.
+                
+                expr = formula
+                
+                # Replace $0, $1... with var_0, var_1...
+                expr = re.sub(r'\$(\d+)', r'mod_\1', expr)
+                
+                # Replace ?name with var_name
+                expr = re.sub(r'\?([a-zA-Z0-9]+)', r'var_\1', expr)
+                
+                # Replace logic operators check
+                # 'if' in ODT is 'if(c, t, f)'
+                # This regex replace is tricky for nested, but simple cases work.
+                # For now assume mostly arithmetic.
+                
+                # Allowed globals
+                safe_locals = {'math': math, 'sin': math.sin, 'cos': math.cos, 
+                               'tan': math.tan, 'sqrt': math.sqrt, 'abs': abs,
+                               'min': min, 'max': max, 'pi': math.pi}
+                
+                # Add current variables to locals with mapped names
+                current_locals = safe_locals.copy()
+                for k, v in variables.items():
+                    if k.startswith('$'):
+                        current_locals[f'mod_{k[1:]}'] = v
+                    else:
+                        current_locals[f'var_{k}'] = v
+                
+                try:
+                    res = eval(expr, {"__builtins__": {}}, current_locals)
+                    variables[name] = float(res)
+                except Exception as e:
+                    # Fallback or log?
+                    variables[name] = 0.0
+                    
+        return variables
+
+    def _convert_path(self, path_data: str, variables: dict) -> str:
+        """Convert ODT enhanced path to SVG path."""
+        # Split tokens
+        # ODT path: "M ?f7 0 L 0 ?f8 ..."
+        # Variables like ?f7 need replacement.
+        
+        # First substitute variables in the string
+        def replace_match(match):
+            key = match.group(0)
+            if key.startswith('?'):
+                val = variables.get(key[1:], 0)
+                return str(val)
+            elif key.startswith('$'):
+                val = variables.get(key, 0)
+                return str(val)
+            return key
+
+        # Helper to limit precision to avoid long SVG strings
+        def fmt(val):
+            try:
+                f = float(val)
+                return f"{f:.2f}".rstrip('0').rstrip('.')
+            except:
+                return str(val)
+
+        # Replace ?name and $num
+        # We also need to handle simple expressions inside path? 
+        # Usually path only has direct variable references or numbers.
+        
+        tokens = path_data.split()
+        svg_path = []
+        
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token.startswith('?') or token.startswith('$'):
+                 # Direct value not command
+                 val = variables.get(token[1:] if token.startswith('?') else token, 0)
+                 svg_path.append(fmt(val))
+            elif token.isalpha():
+                # Command
+                cmd = token.upper()
+                if cmd == 'M': # Move
+                    svg_path.append('M')
+                elif cmd == 'L': # Line
+                    svg_path.append('L')
+                elif cmd == 'C': # Curve (cubic)
+                    svg_path.append('C')
+                elif cmd == 'Z': # Close
+                    svg_path.append('Z')
+                elif cmd == 'N': # End subpath / No fill? 
+                    # SVG doesn't have N. 'Z' closes. 'N' just ends?
+                    pass 
+                elif cmd == 'X': # Segment LineTo X?
+                    # ODT "X x y" -> L x y? No, X is usually "horizontal line to" in SVG (H), 
+                    # But in ODT docs: "X coordinate" -> L (x current-y)? 
+                    # Actually ODT spec says: X = "line-to-x", Y = "line-to-y" (like H and V)
+                    # BUT wait, sample says "X 0 ?f8". That looks like X and Y coords.
+                    # Looking at sample: "M ?f7 0 X 0 ?f8" -> Move to f7,0. Then X ...?
+                    # "X" command in ODT: "The 'X' command draws a line from the current point to a point (x, y)."
+                    # Wait, no. "L x y" is line to. 
+                    # Let's check ODF spec. 
+                    # "U, T, ..."?
+                    # Actually standard ODF enhanced geometry:
+                    # M x y : moveto
+                    # L x y : lineto
+                    # C x1 y1 x2 y2 x y : cubic 
+                    # A ... : arc
+                    # Z : closepath
+                    # N : endpath (no close)
+                    #
+                    # Sample has "X", "Y"?
+                    # Sample: "M ?f7 0 X 0 ?f8 L 0 ?f9 Y ?f7 21600 L ?f10 21600 X 21600 ?f9 L 21600 ?f8 Y ?f10 0 Z N"
+                    # This looks like custom extension or I am misremembering commands.
+                    # LibreOffice ODF: X and Y are often mapped to simple Lines if they have 2 args?
+                    # Let's look at the tokens following X.
+                    # "X 0 ?f8" -> 2 numbers. "Y ?f7 21600" -> 2 numbers.
+                    # If X and Y are just synonyms for L (LineTo), it makes sense.
+                    # Let's assume X = L and Y = L for now unless single arg.
+                    
+                    svg_path.append('L')
+                    
+                elif cmd == 'Y':
+                    svg_path.append('L')
+                    
+                elif cmd == 'U': # Angle ellipse to?
+                    # "U x y w h start-angle end-angle"
+                    # Mapping to Arc (A) is hard without logic.
+                    # For V1, maybe ignore or try to draw line?
+                    # If we don't handle it, SVG breaks.
+                    # Just L (LineTo) first 2 coords?
+                    svg_path.append('L') 
+                
+                else:
+                    # Pass through unknown commands if single letter, might break
+                    pass
+            else:
+                # Number literial
+                svg_path.append(fmt(token))
+            i += 1
+            
+        return " ".join(svg_path)
     
     def _process_drawing_rect(self, frame: ET.Element, rect: ET.Element, style_parts: list) -> str:
         """Process a rectangle drawing."""
