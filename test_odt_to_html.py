@@ -29,7 +29,8 @@ def sample_odt_path(tmp_path_factory):
 @pytest.fixture(scope="module")
 def converted_html(sample_odt_path):
     """Convert the sample ODT to HTML and return the content."""
-    converter = ODTConverter(str(sample_odt_path), show_page_breaks=True)
+    # Default behavior should now be show_page_breaks=True
+    converter = ODTConverter(str(sample_odt_path))
     return converter.convert()
 
 
@@ -139,6 +140,12 @@ class TestTextFormatting:
         """Verify span elements are used for inline formatting."""
         assert '<span' in converted_html
         assert '</span>' in converted_html
+
+    def test_strikethrough_text(self, converted_html):
+        """Verify strikethrough text is converted."""
+        # Check for text-decoration: line-through style
+        assert 'line-through' in converted_html
+        assert 'strikethrough' in converted_html
 
 
 class TestLists:
@@ -396,7 +403,7 @@ class TestCLI:
         assert result.returncode == 0
         assert 'input' in result.stdout
         assert 'output' in result.stdout
-        assert '--page-breaks' in result.stdout
+        assert '--no-page-breaks' in result.stdout
     
     def test_cli_conversion(self, sample_odt_path, tmp_path):
         """Verify CLI conversion works."""
@@ -415,12 +422,12 @@ class TestCLI:
         assert 'Successfully converted' in result.stdout
     
     def test_cli_with_page_breaks(self, sample_odt_path, tmp_path):
-        """Verify CLI --page-breaks option works."""
+        """Verify CLI --no-page-breaks option works."""
         import subprocess
-        html_path = tmp_path / "cli_page_breaks.html"
+        html_path = tmp_path / "cli_no_page_breaks.html"
         
         result = subprocess.run(
-            ['python', 'odt_to_html.py', str(sample_odt_path), str(html_path), '--page-breaks'],
+            ['python', 'odt_to_html.py', str(sample_odt_path), str(html_path), '--no-page-breaks'],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent
@@ -428,7 +435,7 @@ class TestCLI:
         
         assert result.returncode == 0
         content = html_path.read_text(encoding='utf-8')
-        assert 'page-break' in content
+        assert 'page-break' not in content
 
 
 if __name__ == '__main__':

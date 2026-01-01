@@ -112,6 +112,9 @@ def create_sample_odt(output_path: str) -> None:
         <style:style style:name="Underline" style:family="text">
             <style:text-properties style:text-underline-style="solid"/>
         </style:style>
+        <style:style style:name="Strikethrough" style:family="text">
+            <style:text-properties style:text-line-through-style="solid"/>
+        </style:style>
         <style:style style:name="Caption" style:family="paragraph">
             <style:paragraph-properties fo:text-align="center"/>
             <style:text-properties fo:font-style="italic" fo:font-size="10pt"/>
@@ -164,7 +167,8 @@ def create_sample_odt(output_path: str) -> None:
             <text:h text:style-name="Heading_2" text:outline-level="2">Text Formatting</text:h>
             
             <!-- Paragraph with inline formatting -->
-            <text:p text:style-name="Standard">This paragraph contains <text:span text:style-name="T1">bold red text</text:span> and <text:span text:style-name="T2">italic blue text</text:span>. It also has a<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>This is the first footnote with some explanation text.</text:p></text:note-body></text:note> footnote reference.</text:p>
+            <text:p text:style-name="Standard">This paragraph contains <text:span text:style-name="T1">bold red text</text:span> and <text:span text:style-name="T2">italic blue text</text:span>.</text:p>
+            <text:p text:style-name="Standard">This text has <text:span text:style-name="Strikethrough">strikethrough</text:span> formatting. It also has a<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>This is the first footnote with some explanation text.</text:p></text:note-body></text:note> footnote reference.</text:p>
             
             <!-- Another paragraph with more footnotes -->
             <text:p text:style-name="Standard">Here is more text with another footnote<text:note text:id="ftn2" text:note-class="footnote"><text:note-citation>2</text:note-citation><text:note-body><text:p>This is the second footnote demonstrating multiple footnotes work correctly.</text:p></text:note-body></text:note> to demonstrate the feature properly.</text:p>
