@@ -889,160 +889,153 @@ class ODTConverter:
     def _convert_path(self, path_data: str, variables: dict) -> str:
         """Convert ODT enhanced path to SVG path."""
         # Split tokens
-        # ODT path: "M ?f7 0 L 0 ?f8 ..."
-        # Variables like ?f7 need replacement.
+        raw_tokens = path_data.split()
         
-        # First substitute variables in the string
-        def replace_match(match):
-            key = match.group(0)
-            if key.startswith('?'):
-                val = variables.get(key[1:], 0)
-                return str(val)
-            elif key.startswith('$'):
-                val = variables.get(key, 0)
-                return str(val)
-            return key
+        # Pass 1: Resolve all variables to float values or keep commands/literals
+        resolved_tokens = []
+        for token in raw_tokens:
+            if token.isalpha():
+                resolved_tokens.append(token.upper())
+            elif token.startswith('?') or token.startswith('$'):
+                val = float(variables.get(token[1:] if token.startswith('?') else token, 0))
+                resolved_tokens.append(val)
+            else:
+                try:
+                    resolved_tokens.append(float(token))
+                except ValueError:
+                     # Should not happen for valid paths, but keep as is just in case
+                    resolved_tokens.append(token)
 
-        # Helper to limit precision to avoid long SVG strings
-        def fmt(val):
-            try:
-                f = float(val)
-                return f"{f:.2f}".rstrip('0').rstrip('.')
-            except:
-                return str(val)
-
-        # Replace ?name and $num
-        # We also need to handle simple expressions inside path? 
-        # Usually path only has direct variable references or numbers.
-        
-        tokens = path_data.split()
+        # Pass 2: Process commands and generate SVG
         svg_path = []
+        current_x = 0.0
+        current_y = 0.0
+        # Track start of subpath for Z (Close) - usually M sets this
+        subpath_start_x = 0.0
+        subpath_start_y = 0.0
         
-        # Track if we are at the start of a new subpath (implies Move required)
+        # Track subpath start state for implicit moves (U following N)
         is_subpath_start = True
         
+        def fmt(val):
+            if isinstance(val, float):
+                return f"{val:.2f}".rstrip('0').rstrip('.')
+            return str(val)
+
         i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            if token.startswith('?') or token.startswith('$'):
-                 # Check if this token is actually a command that got mixed up? Unlikely if space sep.
-                 # Direct value not command
-                 val = variables.get(token[1:] if token.startswith('?') else token, 0)
-                 svg_path.append(fmt(val))
-            elif token.isalpha():
-                # Command
-                cmd = token.upper()
+        while i < len(resolved_tokens):
+            token = resolved_tokens[i]
+            
+            if isinstance(token, str) and token.isalpha():
+                cmd = token
+                i += 1
                 
-                # Update subpath state based on command type
-                # Drawing commands reset the flag
-                # N (EndPath) sets it
-                
-                if cmd == 'M': # Move
-                    svg_path.append('M')
-                    is_subpath_start = False
-                elif cmd == 'L': # Line
-                    svg_path.append('L')
-                    is_subpath_start = False
-                elif cmd == 'C': # Curve (cubic)
-                    svg_path.append('C')
-                    is_subpath_start = False
-                elif cmd == 'Z': # Close
-                    svg_path.append('Z')
-                    # Z keeps us in the same subpath logically for next command?
-                    # Usually next command is M or N. 
-                    pass 
-                elif cmd == 'N': # End subpath (no close)
-                    # Use this to signal that next shape should probably Move
+                if cmd == 'M':
+                    # Abs Move: M x y
+                    if i + 1 < len(resolved_tokens):
+                        x = resolved_tokens[i]
+                        y = resolved_tokens[i+1]
+                        svg_path.append(f"M {fmt(x)} {fmt(y)}")
+                        current_x, current_y = x, y
+                        subpath_start_x, subpath_start_y = x, y
+                        is_subpath_start = False
+                        i += 2
+                elif cmd == 'L':
+                    # Abs Line: L x y
+                    if i + 1 < len(resolved_tokens):
+                        x = resolved_tokens[i]
+                        y = resolved_tokens[i+1]
+                        svg_path.append(f"L {fmt(x)} {fmt(y)}")
+                        current_x, current_y = x, y
+                        is_subpath_start = False
+                        i += 2
+                elif cmd == 'C':
+                    # Cubic Bezier: C x1 y1 x2 y2 x y
+                    if i + 5 < len(resolved_tokens):
+                        coords = resolved_tokens[i:i+6]
+                        svg_path.append(f"C {' '.join(fmt(c) for c in coords)}")
+                        current_x, current_y = coords[4], coords[5]
+                        is_subpath_start = False
+                        i += 6
+                elif cmd == 'Z':
+                    svg_path.append("Z")
+                    current_x, current_y = subpath_start_x, subpath_start_y
+                    # is_subpath_start remains False usually? 
+                    pass
+                elif cmd == 'N':
+                    # End subpath
                     is_subpath_start = True
-                    pass 
-                elif (cmd == 'X' or cmd == 'Y'): 
-                    # X and Y in ODT enhanced path are essentially LineTo (L)
-                    svg_path.append('L')
-                    is_subpath_start = False
-                elif cmd == 'U': # Angle Ellipse
-                    # Syntax: U x y w h start-angle end-angle
-                    # We need to consume 6 arguments!
-                    
-                    if i + 6 < len(tokens):
-                        # Get arguments (variables or literals)
-                        args = []
-                        for k in range(1, 7):
-                            tk = tokens[i+k]
-                            val = 0.0
-                            if tk.startswith('?') or tk.startswith('$'):
-                                val = float(variables.get(tk[1:] if tk.startswith('?') else tk, 0))
-                            else:
-                                try:
-                                    val = float(tk)
-                                except:
-                                    pass
-                            args.append(val)
+                elif cmd == 'X' or cmd == 'Y':
+                    # Treated as Arc (Quarter Ellipse) for Round Rectangles
+                    # Abs target: x y
+                    if i + 1 < len(resolved_tokens):
+                        x = resolved_tokens[i]
+                        y = resolved_tokens[i+1]
                         
+                        # Calculate radii based on distance
+                        rx = abs(x - current_x)
+                        ry = abs(y - current_y)
+                        
+                        # A rx ry rot large_arc sweep x y
+                        # Sweep 0 is usually correct for convex corners in standard ODF paths
+                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 0 0 {fmt(x)} {fmt(y)}")
+                        
+                        current_x, current_y = x, y
+                        is_subpath_start = False
+                        i += 2
+                elif cmd == 'U':
+                    # Angle Ellipse: U cx cy rx ry start end
+                    if i + 5 < len(resolved_tokens):
+                        args = resolved_tokens[i:i+6]
                         cx, cy, rx, ry, start_deg, end_deg = args
-                        # Note: In ODF enhanced geometry 'U' command, the 3rd and 4th args are RA and RB (Radii),
-                        # not width/height (Diameter). Earlier implementation incorrectly divided by 2.
-                        # We rename w/h to rx/ry in args unpacking for clarity.
                         
-                        # Convert angles to radians
                         start_rad = math.radians(start_deg)
                         end_rad = math.radians(end_deg)
                         
                         sx = cx + rx * math.cos(start_rad)
                         sy = cy + ry * math.sin(start_rad)
                         
-                        # Determine entry action: Move or Line
-                        if is_subpath_start:
-                            svg_path.append('M')
-                        else:
-                            svg_path.append('L')
+                        # implicit move/line logic
+                        action = 'M' if is_subpath_start else 'L'
+                        svg_path.append(f"{action} {fmt(sx)} {fmt(sy)}")
                         
-                        svg_path.append(fmt(sx))
-                        svg_path.append(fmt(sy))
-                        
-                        # Handle full circle case
+                        # Draw arcs
                         if abs(end_deg - start_deg) >= 360:
                             mid_rad = start_rad + math.pi
                             mid_x = cx + rx * math.cos(mid_rad)
                             mid_y = cy + ry * math.sin(mid_rad)
-                            
                             end_x = cx + rx * math.cos(end_rad)
                             end_y = cy + ry * math.sin(end_rad)
                             
-                            # First half
                             svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(mid_x)} {fmt(mid_y)}")
-                            # Second half
                             svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(end_x)} {fmt(end_y)}")
-                            
                         else:
-                            # Partial arc
                             ex = cx + rx * math.cos(end_rad)
                             ey = cy + ry * math.sin(end_rad)
-                            
-                            # Arc
-                            delta_deg = end_deg - start_deg
-                            large_arc = 1 if abs(delta_deg) > 180 else 0
-                            sweep = 1 # Clockwise usually? ODT might use degrees. Positive = clockwise?
-                            
-                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 {large_arc} {sweep} {fmt(ex)} {fmt(ey)}")
-
-                        # Skip the processed tokens
-                        i += 6 
+                            delta = end_deg - start_deg
+                            large = 1 if abs(delta) > 180 else 0
+                            sweep = 1 # Clockwise usually
+                            svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 {large} {sweep} {fmt(ex)} {fmt(ey)}")
                         
+                        # Update current pos (end of arc)
+                        current_x = cx + rx * math.cos(end_rad)
+                        current_y = cy + ry * math.sin(end_rad)
                         is_subpath_start = False
-                        
-                        # Do NOT append U itself
-                        # Continue loop
-                        i += 1
-                        continue
-
+                        i += 6
                 else:
-                    # Pass through unknown commands if single letter, might break
+                    # Unknown command?
                     pass
             else:
-                # Number literial
-                svg_path.append(fmt(token))
-            i += 1
-            
+                # Number without command? 
+                # Could be implicit LineTo or continuation of polyline?
+                # ODF paths are usually explicit.
+                # If we have numbers here, just skip or append?
+                # Previous logic passed them through.
+                # But treating them as L is safer if we suspect polyline.
+                # For safety, if we see 2 numbers, treat as implicit L?
+                # Or just ignore to prevent corruption.
+                i += 1
+                
         return " ".join(svg_path)
     
     def _process_drawing_rect(self, frame: ET.Element, rect: ET.Element, style_parts: list) -> str:
