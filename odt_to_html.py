@@ -978,9 +978,10 @@ class ODTConverter:
                                     pass
                             args.append(val)
                         
-                        cx, cy, w, h, start_deg, end_deg = args
-                        rx = w / 2
-                        ry = h / 2
+                        cx, cy, rx, ry, start_deg, end_deg = args
+                        # Note: In ODF enhanced geometry 'U' command, the 3rd and 4th args are RA and RB (Radii),
+                        # not width/height (Diameter). Earlier implementation incorrectly divided by 2.
+                        # We rename w/h to rx/ry in args unpacking for clarity.
                         
                         # Convert angles to radians
                         start_rad = math.radians(start_deg)
