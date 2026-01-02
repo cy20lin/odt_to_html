@@ -645,6 +645,11 @@ class ODTConverter:
         x = frame.get(f"{{{NAMESPACES['svg']}}}x")
         y = frame.get(f"{{{NAMESPACES['svg']}}}y")
         
+        if x or y:
+            style_parts.append("position: absolute")
+            if x: style_parts.append(f"left: {x}")
+            if y: style_parts.append(f"top: {y}")
+        
         # Note: In ODT, frames directly in paragraphs might be positioned relative to the paragraph/page.
         # Inside a draw:frame container, children are absolutely positioned.
         
