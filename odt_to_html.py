@@ -562,7 +562,7 @@ class ODTConverter:
         
         return f'<a href="{escape(href)}">{content}</a>'
     
-    def _process_frame(self, frame: ET.Element, as_svg: bool = False) -> str:
+    def _process_frame(self, frame: ET.Element) -> str:
         """Process a frame element (usually contains images or drawings).
         
         Frames can contain multiple elements: images, text-boxes with captions,
@@ -575,33 +575,11 @@ class ODTConverter:
         width = frame.get(f"{{{NAMESPACES['svg']}}}width", "")
         height = frame.get(f"{{{NAMESPACES['svg']}}}height", "")
         
-        if not height:
-            # Try to get height from text-box child (min-height)
-            tb = frame.find(f"./{{{NAMESPACES['draw']}}}text-box")
-            if tb is not None:
-                min_h = tb.get(f"{{{NAMESPACES['fo']}}}min-height")
-                if min_h:
-                    height = min_h
-        
-        # Defaults if still missing
-        if not width: width = "100px"
-        if not height: height = "100px"
-
-        # Get dimensions in pixels for SVG consistency
-        try:
-             width_px = self._dimension_to_px(width)
-             height_px = self._dimension_to_px(height)
-        except:
-             width_px = 100
-             height_px = 100
-             
         style_parts = []
-        # Only add width/height to style if NOT in SVG mode (SVG uses attributes)
-        if not as_svg:
-            if width:
-                style_parts.append(f"width: {width}")
-            if height:
-                style_parts.append(f"height: {height}")
+        if width:
+            style_parts.append(f"width: {width}")
+        if height:
+            style_parts.append(f"height: {height}")
         
         # Get style name and properties
         style_name = frame.get(f"{{{NAMESPACES['draw']}}}style-name", "")
@@ -622,134 +600,90 @@ class ODTConverter:
         x = frame.get(f"{{{NAMESPACES['svg']}}}x")
         y = frame.get(f"{{{NAMESPACES['svg']}}}y")
         
-        # Determine positioning coords if available
-        x_val = x if x else "0"
-        y_val = y if y else "0"
+        # Note: In ODT, frames directly in paragraphs might be positioned relative to the paragraph/page.
+        # Inside a draw:frame container, children are absolutely positioned.
         
         # Collect all content from the frame
         frame_content_parts = []
         
-        # Decide whether to render this frame as an SVG container
-        # We generally prefer SVG for frames unless explicitly told otherwise or context dictates
-        # If as_svg=True, we ARE in an SVG context, so we output SVG elements.
-        # If as_svg=False, we check if we should START an SVG context.
-        # Generally, draw:frame implies a drawing canvas or image wrapper.
-        
-        is_root_svg = not as_svg
+        # If we have multiple children, or specific positioning, we might want a container
+        has_positioned_children = False
         
         # Process all direct children of the frame
         for child in frame:
             tag = child.tag.split('}')[-1]
-            
-            # Child attributes for positioning
-            cx = child.get(f"{{{NAMESPACES['svg']}}}x", "0")
-            cy = child.get(f"{{{NAMESPACES['svg']}}}y", "0")
-            cw = child.get(f"{{{NAMESPACES['svg']}}}width", "100%")
-            ch = child.get(f"{{{NAMESPACES['svg']}}}height", "100%")
-            transform = child.get(f"{{{NAMESPACES['draw']}}}transform", "")
-            
             child_style = []
-            if transform:
-                 child_style.append(f"transform: {transform}")
-
-            # Pass absolute positioning props? 
-            # In SVG, we pass x, y directly to processors or wrap result.
             
+            # Check for positioning on children
+            cx = child.get(f"{{{NAMESPACES['svg']}}}x")
+            cy = child.get(f"{{{NAMESPACES['svg']}}}y")
+            cw = child.get(f"{{{NAMESPACES['svg']}}}width")
+            ch = child.get(f"{{{NAMESPACES['svg']}}}height")
+            transform = child.get(f"{{{NAMESPACES['draw']}}}transform")
+            
+            if cx or cy:
+                has_positioned_children = True
+                child_style.append("position: absolute")
+                if cx: child_style.append(f"left: {cx}")
+                if cy: child_style.append(f"top: {cy}")
+            if cw: child_style.append(f"width: {cw}")
+            if ch: child_style.append(f"height: {ch}")
+            
+            if transform:
+                 # Clean up transform string - simplified for basic cases
+                 # rotate (-0.5...) translate (...) -> rotate(...) translate(...)
+                 child_style.append(f"transform: {transform}")
+                 # You might need detailed parsing if syntax varies significantly from CSS
+                 # ODT often uses "rotate (angle) translate (x y)". CSS expects "rotate(angle) translate(x, y)"
+                 # Simple fix specific for typical ODT output: add commas to translate?
+                 # Actually ODT: "rotate (1.57) translate (1cm 2cm)" -> CSS: "rotate(1.57rad) translate(1cm, 2cm)"
+                 # This is complex. For now, pass it through and hope it works or needs minor tweak.
+                 pass
+
             if tag == 'image':
-                frame_content_parts.append(self._process_image(child, style_parts.copy() + child_style, frame_name, as_svg=True, x=cx, y=cy, width=cw, height=ch))
+                frame_content_parts.append(self._process_image(child, style_parts.copy() + child_style, frame_name))
             elif tag == 'text-box':
-                # Text box content (HTML)
+                # Text box may contain figure captions - process without extra styling
+                # But if it has position, we need a wrapper
                 content = self._process_text_box_content(child)
-                
-                # In SVG, wrap HTML in foreignObject
-                # Styles on the div
-                div_style = "width:100%; height:100%;"
                 if child_style:
-                    div_style += " " + "; ".join(child_style)
-                    
-                fo_content = f'<div xmlns="http://www.w3.org/1999/xhtml" style="{div_style}">{content}</div>'
-                frame_content_parts.append(f'<foreignObject x="{cx}" y="{cy}" width="{cw}" height="{ch}">{fo_content}</foreignObject>')
-                
+                    s = "; ".join(child_style)
+                    frame_content_parts.append(f'<div style="{s}">{content}</div>')
+                else:
+                    frame_content_parts.append(content)
             elif tag == 'custom-shape':
-                # shape handles its own viewbox/path. as_svg=True demands SVG output.
-                # We pass x, y, w, h to let it position itself in the parent SVG
-                frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style, as_svg=True, x=cx, y=cy, w=cw, h=ch))
+                frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style))
             elif tag == 'rect':
-                frame_content_parts.append(self._process_drawing_rect(frame, child, style_parts.copy() + child_style, as_svg=True, x=cx, y=cy, w=cw, h=ch))
+                frame_content_parts.append(self._process_drawing_rect(frame, child, style_parts.copy() + child_style))
             elif tag == 'ellipse':
-                frame_content_parts.append(self._process_drawing_ellipse(frame, child, style_parts.copy() + child_style, as_svg=True, x=cx, y=cy, w=cw, h=ch))
+                frame_content_parts.append(self._process_drawing_ellipse(frame, child, style_parts.copy() + child_style))
             elif tag == 'line':
-                 # line has x1, y1 etc.
-                frame_content_parts.append(self._process_drawing_line(child, style_parts.copy() + child_style, as_svg=True))
-            elif tag == 'frame':
-                # Nested frame
-                frame_content_parts.append(self._process_frame(child, as_svg=True))
+                frame_content_parts.append(self._process_drawing_line(child, style_parts.copy() + child_style))
             elif tag == 'object':
                 # OLE object - try to find replacement image
                 replacement_img = frame.find(f".//{{{NAMESPACES['draw']}}}image")
                 if replacement_img is not None:
-                    frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name, as_svg=True, x=cx, y=cy, width=cw, height=ch))
-
-        # Join content
-        content = '\n'.join(part for part in frame_content_parts if part)
+                    frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name))
         
-        # Style handling for the container
-        style_str = "; ".join(style_parts)
-        
-        # If we are the root SVG
-        if is_root_svg:
-            # We must be an <svg> element.
-            # Handle absolute positioning of the Frame itself if it has x/y (relative to page)
-            # Use style for position: absolute
+        # If we have positioned children, the container must be relative
+        if has_positioned_children:
+            style_parts.append("position: relative")
+            # Ensure it has block display to contain size
+            style_parts.append("display: inline-block")
             
-            # Root SVG geometry
-            # viewBox: 0 0 width height (in px)
-            # We want to use the specified width/height (e.g. 4in) for the svg element width/height (CSS/Attr),
-            # and map viewBox to pixels? Or just use "0 0 width_val height_val"?
-            # SVG attributes width/height accept units. viewBox is unitless (user units).
-            # If we set width="4in", 1 user unit = ?
-            # Best practice: preserve units in width/height attributes, use pixels in viewBox for predictable internal coords.
-            
-            # But wait, our children use x="0.5in". If viewBox is pixels, "0.5in" x attribute works in SVG?
-            # Yes, SVG lengths support units.
-            # So if viewBox="0 0 width_px height_px", then coordinate system is pixels.
-            # Then <rect x="1in"> will range to 96 units (if 96dpi).
-            # But ODT dimensions might not align perfectly with our px conversion.
-            # SAFER: Use non-viewBox SVG if possible? Or set viewBox to match the internal logic?
-            # Custom shapes use internal units (21600).
-            # Images/text-boxes use "1in".
-            # If we provide a viewBox, we define the user coordinate system.
-            # If we don't, user units map to screen pixels (usually).
-            
-            # Use explicit widths and heights with units on the root SVG.
-            # No viewBox on root SVG (unless necessary for scaling).
-            # This allows child "x=1in" to work naturally.
-            
-            svg_attrs = f'width="{width}" height="{height}"'
-            if x:
-                # If frame has x/y, it's typically absolute.
-                if "position" not in style_str:
-                    style_parts.append("position: absolute")
-                    style_parts.append(f"left: {x}")
-                    style_parts.append(f"top: {y}")
-            
-            # Ensure display block/inline-block
-            if "display" not in style_str:
-                style_parts.append("display: inline-block")
-            
-            # Re-generate style string
+        # If we found content, return it
+        if frame_content_parts:
+            # Wrap in the main frame div
             style_str = "; ".join(style_parts)
-            
-            return f'<svg class="drawing-frame" {svg_attrs} style="{style_str}" xmlns="http://www.w3.org/2000/svg" version="1.1">{content}</svg>'
+            content = '\n'.join(part for part in frame_content_parts if part)
+            return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
         
-        else:
-            # We are a nested frame (SVG inside SVG).
-            # Return nested <svg> to establish new coordinate scope and styling?
-            # width/height attributes on nested svg are valid.
-            # x/y attributes position it.
-            
-            return f'<svg x="{x_val}" y="{y_val}" width="{width}" height="{height}" class="drawing-frame-nested">{content}</svg>'
-
+        # Fallback: check for ObjectReplacements
+        for name in self.resources:
+            if 'ObjectReplacement' in name and frame_name and frame_name in name:
+                return self._create_image_from_resource(name, style_parts)
+        
+        return ""
     
     def _process_text_box_content(self, text_box: ET.Element) -> str:
         """Process text box content without adding extra wrapper styling.
@@ -772,7 +706,7 @@ class ODTConverter:
                 parts.append(self._process_list(child))
         return '\n'.join(parts)
     
-    def _process_image(self, image: ET.Element, style_parts: list, frame_name: str = "", as_svg: bool = False, x="0", y="0", width="", height="") -> str:
+    def _process_image(self, image: ET.Element, style_parts: list, frame_name: str = "") -> str:
         """Process an image element with optional caption support."""
         href = image.get(f"{{{NAMESPACES['xlink']}}}href", "")
         
@@ -789,16 +723,10 @@ class ODTConverter:
             # External image - keep the href
             src = href
         
-        alt_text = frame_name if frame_name else ""
-        
-        if as_svg:
-            attrs = f'href="{src}" x="{x}" y="{y}"'
-            if width: attrs += f' width="{width}"'
-            if height: attrs += f' height="{height}"'
-            return f'<image {attrs} />'
-            
         style_str = "; ".join(style_parts) if style_parts else ""
         style_attr = f' style="{style_str}"' if style_str else ''
+        
+        alt_text = frame_name if frame_name else ""
         
         # Return as a figure element for semantic correctness
         return f'<img src="{src}"{style_attr} alt="{escape(alt_text)}">'
@@ -815,13 +743,13 @@ class ODTConverter:
         
         return f'<img src="{src}"{style_attr} alt="">'
     
-    def _process_custom_shape(self, frame: ET.Element, shape: ET.Element, style_parts: list, as_svg: bool = False, x="0", y="0", w="", h="") -> str:
+    def _process_custom_shape(self, frame: ET.Element, shape: ET.Element, style_parts: list) -> str:
         """Process a custom shape drawing element."""
-        # Get dimensions if not passed
-        width = w if w else frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
-        height = h if h else frame.get(f"{{{NAMESPACES['svg']}}}height", "100px")
+        # Get dimensions
+        width = frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
+        height = frame.get(f"{{{NAMESPACES['svg']}}}height", "100px")
         
-        # Try to convert dimensions to pixels for CSS/SVG
+        # Try to convert dimensions to pixels for SVG container
         svg_width_px = self._dimension_to_px(width)
         svg_height_px = self._dimension_to_px(height)
         
@@ -872,28 +800,24 @@ class ODTConverter:
 
         text_html = "".join(text_content_parts)
             
-        # Construct SVG content
-        path_elem = ""
+        # Construct SVG
+        # We use the viewBox from ODT to let the path coordinates work directly
+        svg_content = ""
         if path_data:
-             path_elem = f'<path d="{path_data}" fill="{fill_color}" stroke="{stroke_color}" stroke-width="{stroke_width}" vector-effect="non-scaling-stroke"/>'
-        
-        if as_svg:
-            # Return nested SVG
-            # Use w/h/x/y attributes
-            attrs = f'x="{x}" y="{y}" width="{width}" height="{height}" viewBox="{view_box}"'
-            
-            content = path_elem
-            if text_html.strip():
-                 # Overlay text in foreignObject centered
-                 # Use 100% size of the nested SVG
-                 content += f'<foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;overflow:hidden;">{text_html}</div></foreignObject>'
-            
-            return f'<svg {attrs} preserveAspectRatio="none">{content}</svg>'
-
-        # Non-SVG mode (HTML container)
+             svg_content = f'<path d="{path_data}" fill="{fill_color}" stroke="{stroke_color}" stroke-width="{stroke_width}" vector-effect="non-scaling-stroke"/>'
+        else:
+             # Fallback if no path (e.g. simple rect logic needed but custom-shape should have path or type)
+             # Some shapes use modifiers and type='rectangle' without explicit path.
+             # For now, minimal fallback if empty path but existing geometry
+             pass
+             
         svg = f'''<svg width="{width}" height="{height}" viewBox="{view_box}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-            {path_elem}
+            {svg_content}
         </svg>'''
+        
+        # If there is text, we need to overlay it. 
+        # ODT text inside shapes is usually centered or fully filling the shape box.
+        # We can use a relative container.
         
         style_str = "; ".join(style_parts)
         if "position" not in style_str:
@@ -1155,21 +1079,17 @@ class ODTConverter:
                 
         return " ".join(svg_path)
     
-    def _process_drawing_rect(self, frame: ET.Element, rect: ET.Element, style_parts: list, as_svg: bool = False, x="0", y="0", w="", h="") -> str:
+    def _process_drawing_rect(self, frame: ET.Element, rect: ET.Element, style_parts: list) -> str:
         """Process a rectangle drawing."""
-        width = w if w else frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
-        height = h if h else frame.get(f"{{{NAMESPACES['svg']}}}height", "50px")
+        width = frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
+        height = frame.get(f"{{{NAMESPACES['svg']}}}height", "50px")
         
         svg_width = self._dimension_to_px(width)
         svg_height = self._dimension_to_px(height)
         
-        rect_elem = f'<rect x="0" y="0" width="{width}" height="{height}" fill="#e0e0e0" stroke="#333" stroke-width="2"/>'
-        
-        if as_svg:
-             return f'<svg x="{x}" y="{y}" width="{width}" height="{height}">{rect_elem}</svg>'
-             
         svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-            {rect_elem.replace('width="' + width + '"', 'width="' + str(svg_width) + '"').replace('height="' + height + '"', 'height="' + str(svg_height) + '"')}
+            <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"
+                  fill="#e0e0e0" stroke="#333" stroke-width="2"/>
         </svg>'''
         
         style_str = "; ".join(style_parts)
@@ -1177,17 +1097,11 @@ class ODTConverter:
             style_str += "; display: inline-block"
         return f'<div class="drawing" style="{style_str}">{svg}</div>'
     
-    def _process_drawing_ellipse(self, frame: ET.Element, ellipse: ET.Element, style_parts: list, as_svg: bool = False, x="0", y="0", w="", h="") -> str:
+    def _process_drawing_ellipse(self, frame: ET.Element, ellipse: ET.Element, style_parts: list) -> str:
         """Process an ellipse drawing."""
-        width = w if w else frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
-        height = h if h else frame.get(f"{{{NAMESPACES['svg']}}}height", "100px")
+        width = frame.get(f"{{{NAMESPACES['svg']}}}width", "100px")
+        height = frame.get(f"{{{NAMESPACES['svg']}}}height", "100px")
         
-        # Simplified ellipse logic assuming full fill
-        ellipse_elem = f'<ellipse cx="50%" cy="50%" rx="50%" ry="50%" fill="#e0e0e0" stroke="#333" stroke-width="2"/>'
-        
-        if as_svg:
-             return f'<svg x="{x}" y="{y}" width="{width}" height="{height}">{ellipse_elem}</svg>'
-             
         svg_width = self._dimension_to_px(width)
         svg_height = self._dimension_to_px(height)
         
@@ -1201,16 +1115,13 @@ class ODTConverter:
             style_str += "; display: inline-block"
         return f'<div class="drawing" style="{style_str}">{svg}</div>'
     
-    def _process_drawing_line(self, line: ET.Element, style_parts: list, as_svg: bool = False) -> str:
+    def _process_drawing_line(self, line: ET.Element, style_parts: list) -> str:
         """Process a line drawing."""
         x1 = line.get(f"{{{NAMESPACES['svg']}}}x1", "0")
         y1 = line.get(f"{{{NAMESPACES['svg']}}}y1", "0")
         x2 = line.get(f"{{{NAMESPACES['svg']}}}x2", "100")
         y2 = line.get(f"{{{NAMESPACES['svg']}}}y2", "0")
         
-        if as_svg:
-             return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="#333" stroke-width="2"/>'
-             
         # Convert to pixels
         x1_px = self._dimension_to_px(x1)
         y1_px = self._dimension_to_px(y1)
