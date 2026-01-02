@@ -498,53 +498,12 @@ class ODTConverter:
         style_name = para.get(f"{{{NAMESPACES['text']}}}style-name", "")
         style_str = self._get_style_string(style_name)
         
-        # Check for paragraph-anchored shapes that need positioning context
-        # These shapes have anchor-type="paragraph" with x/y coordinates
-        max_positioned_y = 0
-        max_positioned_x = 0
-        has_positioned_shapes = False
-        for child in para:
-            anchor_type = child.get(f"{{{NAMESPACES['draw']}}}anchor-type")
-            x = child.get(f"{{{NAMESPACES['svg']}}}x")
-            y = child.get(f"{{{NAMESPACES['svg']}}}y")
-            width = child.get(f"{{{NAMESPACES['svg']}}}width", "0")
-            height = child.get(f"{{{NAMESPACES['svg']}}}height", "0")
-            
-            if anchor_type == 'paragraph' and (x or y):
-                has_positioned_shapes = True
-                # Calculate bottom and right of this shape
-                y_val = self._dimension_to_px(y) if y else 0
-                h_val = self._dimension_to_px(height)
-                bottom = y_val + h_val
-                if bottom > max_positioned_y:
-                    max_positioned_y = bottom
-                    
-                x_val = self._dimension_to_px(x) if x else 0
-                w_val = self._dimension_to_px(width)
-                right = x_val + w_val
-                if right > max_positioned_x:
-                    max_positioned_x = right
-        
         content = self._process_inline_content(para)
         
         if not content.strip():
             content = "&nbsp;"  # Preserve empty paragraphs
         
-        # Build paragraph styles
-        para_styles = []
-        if style_str:
-            para_styles.append(style_str)
-        
-        # If we have positioned shapes, ensure the paragraph can contain them
-        if has_positioned_shapes:
-            para_styles.append("position: relative")
-            para_styles.append("overflow: visible")
-            if max_positioned_y > 0:
-                para_styles.append(f"min-height: {max_positioned_y}px")
-            if max_positioned_x > 0:
-                para_styles.append(f"min-width: {max_positioned_x}px")
-        
-        style_attr = f' style="{"; ".join(para_styles)}"' if para_styles else ''
+        style_attr = f' style="{style_str}"' if style_str else ''
         return f'<p{style_attr}>{content}</p>'
     
     def _process_heading(self, heading: ET.Element) -> str:
@@ -574,8 +533,7 @@ class ODTConverter:
             # Check for positioning attributes on the element
             # ODT shapes anchored to paragraph/char inside a paragraph often have x/y coordinates
             # We need to apply these as absolute positioning ONLY if anchor-type is not "as-char"
-            # Note: anchor-type can be in text: or draw: namespace depending on context
-            anchor_type = child.get(f"{{{NAMESPACES['text']}}}anchor-type") or child.get(f"{{{NAMESPACES['draw']}}}anchor-type")
+            anchor_type = child.get(f"{{{NAMESPACES['draw']}}}anchor-type")
             element_style = []
             x = child.get(f"{{{NAMESPACES['svg']}}}x")
             y = child.get(f"{{{NAMESPACES['svg']}}}y")
@@ -607,8 +565,6 @@ class ODTConverter:
                     angle_rad = -transform_info['rotate']  # Negate for CSS
                     element_style.append(f"transform: rotate({angle_rad}rad)")
                     element_style.append("transform-origin: 0 0")  # ODT rotates around top-left
-                
-                element_style.append("z-index: 1")
             else:
                 # As-char elements, unset anchor, or only partial coordinates → flow inline
                 element_style.append("display: inline-block")
