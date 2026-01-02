@@ -18,6 +18,7 @@ import mimetypes
 import math
 import re
 import sys
+import string
 import zipfile
 from html import escape
 from pathlib import Path
@@ -368,8 +369,14 @@ class ODTConverter:
         
         stroke_width = props.get(f"{{{NAMESPACES['svg']}}}stroke-width")
         if stroke_width:
-            style_dict['border-width'] = stroke_width
-            style_dict['stroke-width'] = stroke_width
+             # Handle hairline width (0cm, 0in) which means "thinnest possible"
+             if stroke_width.startswith('0') and '0.' not in stroke_width and stroke_width.replace('0', '').strip(string.ascii_letters) == '':
+                  # This covers "0in", "0cm", "0pt" etc but not "0.05pt"
+                  style_dict['border-width'] = '1px'
+                  style_dict['stroke-width'] = '1px'
+             else:
+                style_dict['border-width'] = stroke_width
+                style_dict['stroke-width'] = stroke_width
         
         # Fill color
         fill = props.get(f"{{{NAMESPACES['draw']}}}fill")
@@ -381,6 +388,14 @@ class ODTConverter:
         elif fill_color:
             style_dict['background-color'] = fill_color
             style_dict['fill'] = fill_color
+
+        # Stroke Dash
+        stroke_dash = props.get(f"{{{NAMESPACES['draw']}}}stroke-dash")
+        if stroke_style == 'dash' or stroke_dash:
+            style_dict['border-style'] = 'dashed'
+            style_dict['stroke-dasharray'] = '5,5' # Simple fallback for SVG
+        elif stroke_style == 'solid':
+            style_dict['border-style'] = 'solid'
 
     
     def _get_style_string(self, style_name: str) -> str:
@@ -565,6 +580,21 @@ class ODTConverter:
             style_parts.append(f"width: {width}")
         if height:
             style_parts.append(f"height: {height}")
+        
+        # Get style name and properties
+        style_name = frame.get(f"{{{NAMESPACES['draw']}}}style-name", "")
+        if style_name in self.styles:
+            frame_style_props = self.styles[style_name]
+            
+            # Apply border/background properties
+            for prop in ['border', 'border-color', 'border-width', 'border-style', 
+                         'background-color', 'padding', 'margin']:
+                if prop in frame_style_props:
+                    style_parts.append(f"{prop}: {frame_style_props[prop]}")
+            
+            # Ensure box-sizing if borders are added
+            if 'border' in frame_style_props or 'border-width' in frame_style_props:
+                style_parts.append("box-sizing: border-box")
         
         # Check for absolute positioning
         x = frame.get(f"{{{NAMESPACES['svg']}}}x")
