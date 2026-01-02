@@ -1,0 +1,32 @@
+# Task: Fix ODT Drawing to HTML Conversion
+
+- [ ] Investigate current drawing implementation <!-- id: 0 -->
+    - [ ] Analyze `odt_to_html.py` for `draw:custom-shape` handling
+    - [ ] Inspect `sample_test_drawing.odt` XML content (content.xml)
+- [ ] Design fix for geometry and color <!-- id: 1 -->
+    - [x] Plan equation solver for `draw:equation`
+    - [x] Plan path command mapping (`draw:enhanced-path` to SVG `d`)
+    - [x] Plan style extraction (fill, stroke)
+- [ ] Implement geometry and style fixes <!-- id: 2 -->
+    - [x] Implement equation parsing
+    - [x] Implement path command conversion
+    - [x] Implement color/style application
+- [x] Verify functionality <!-- id: 3 -->
+    - [x] Run reproduction scripts
+    - [x] Check generated HTML content
+- [x] Refine implementation <!-- id: 4 -->
+    - [x] Fix extra line in Sun shape (`U` command after `N` should Move)
+    - [x] Verify fix with screenshot comparison
+- [x] Fix Round Rectangle corners <!-- id: 5 -->
+    - [x] Interpret `X` and `Y` commands as elliptical arcs
+    - [x] Track current coordinates in path parser
+    - [x] Verify fix with `sample_test_drawing.odt`
+- [x] Fix shape regression <!-- id: 6 -->
+    - [x] Restore implicit command repetition support in `_convert_path`
+    - [x] Verify `Can` and `Sun` shapes are correct
+- [x] Create regression tests <!-- id: 7 -->
+    - [x] Create `test_odt_shapes.py`
+    - [x] Implement checks for Round Rectangle (Arcs)
+    - [x] Implement checks for Sun (Circle size, Rays)
+    - [x] Implement checks for Can (Implicit commands)
+    - [x] Run and verify tests pass
