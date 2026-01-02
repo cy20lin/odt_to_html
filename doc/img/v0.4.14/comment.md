@@ -1,0 +1,1 @@
+This is a GOOD one that the shape location issue in sample_test_drawing.odt is fixed
