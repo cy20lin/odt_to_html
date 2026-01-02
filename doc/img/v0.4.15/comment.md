@@ -1,0 +1,1 @@
+this version fix wrong arrow2 location partially, in sample_annotated_image.odt
