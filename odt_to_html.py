@@ -397,6 +397,29 @@ class ODTConverter:
         elif stroke_style == 'solid':
             style_dict['border-style'] = 'solid'
 
+        # Also check for fo:border properties which might be used in graphic styles
+        if self.respect_table_borders:
+            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+                if border_val and border_val != 'none':
+                    parts = border_val.split()
+                    if len(parts) >= 3 and parts[0].endswith('pt'):
+                        try:
+                            width = float(parts[0][:-2])
+                            if width < 0.5:
+                                parts[0] = "0.5pt"
+                                border_val = " ".join(parts)
+                        except ValueError:
+                            pass
+                    style_dict[border_prop] = border_val
+
+        # Padding/Margin
+        padding = props.get(f"{{{NAMESPACES['fo']}}}padding")
+        if padding: style_dict['padding'] = padding
+        margin = props.get(f"{{{NAMESPACES['fo']}}}margin")
+        if margin: style_dict['margin'] = margin
+
+
     
     def _get_style_string(self, style_name: str) -> str:
         """Get CSS style string for a named style."""
@@ -483,6 +506,22 @@ class ODTConverter:
         for child in element:
             tag = child.tag.split('}')[-1]
             
+            # Check for positioning attributes on the element
+            # ODT shapes anchored to paragraph/char inside a paragraph often have x/y coordinates
+            # We need to apply these as absolute positioning
+            element_style = []
+            x = child.get(f"{{{NAMESPACES['svg']}}}x")
+            y = child.get(f"{{{NAMESPACES['svg']}}}y")
+            width = child.get(f"{{{NAMESPACES['svg']}}}width")
+            height = child.get(f"{{{NAMESPACES['svg']}}}height")
+            
+            if x or y:
+                element_style.append("position: absolute")
+                if x: element_style.append(f"left: {x}")
+                if y: element_style.append(f"top: {y}")
+            # Note: width/height are usually handled by the specific processors, 
+            # but we pass them via style for generic containers if needed.
+            
             if tag == 'span':
                 parts.append(self._process_span(child))
             elif tag == 's':
@@ -496,6 +535,12 @@ class ODTConverter:
             elif tag == 'a':
                 parts.append(self._process_link(child))
             elif tag == 'frame':
+                # Pass element_style if it has positioning (the frame processor will merge/handle it?)
+                # _process_frame doesn't currently accept external styles argument.
+                # However, it reads x/y itself from the element. 
+                # But it assumes it returns a block. If we are inline, and it has x/y, 
+                # _process_frame handles extracting x/y from the element itself (lines 600-601).
+                # So we just call it.
                 parts.append(self._process_frame(child))
             elif tag == 'bookmark' or tag == 'bookmark-start' or tag == 'bookmark-end':
                 # Bookmarks can be ignored or converted to anchors
@@ -518,13 +563,13 @@ class ODTConverter:
                 parts.append(f'<sup><a href="#ref-{ref_name}" class="footnote-ref">{content}</a></sup>')
             elif tag == 'custom-shape':
                 # Handle inline custom shapes
-                parts.append(self._process_custom_shape(child, child, []))
+                parts.append(self._process_custom_shape(child, child, element_style))
             elif tag == 'rect':
-                parts.append(self._process_drawing_rect(child, child, []))
+                parts.append(self._process_drawing_rect(child, child, element_style))
             elif tag == 'ellipse':
-                parts.append(self._process_drawing_ellipse(child, child, []))
+                parts.append(self._process_drawing_ellipse(child, child, element_style))
             elif tag == 'line':
-                parts.append(self._process_drawing_line(child, []))
+                parts.append(self._process_drawing_line(child, element_style))
             else:
                 # Try to get any text content
                 if child.text:
@@ -1408,6 +1453,7 @@ class ODTConverter:
         }}
         p {{
             margin: 0.5em 0;
+            position: relative;
         }}
         h1, h2, h3, h4, h5, h6 {{
             margin-top: 1em;
