@@ -72,8 +72,8 @@ if __name__ == "__main__":
     # output_tmp_dir.mkdir(parents=True, exist_ok=True)
     input_odt_file_path = pathlib.Path(sys.argv[1]).absolute().as_posix()
     try:
-        # hti = Html2Image(browser='edge', size=(817,1057), output_path=output_file_path.parent)
-        hti = Html2Image(browser='edge', size=(540,960), output_path=output_file_path.parent)
+        hti = Html2Image(browser='edge', size=(817,1057), output_path=output_file_path.parent)
+        # hti = Html2Image(browser='edge', size=(540,960), output_path=output_file_path.parent)
         # hti = Html2Image(browser='edge', output_path=output_file_path.parent)
         hti.screenshot(html_file=input_file_path.as_posix(), save_as=output_file_path.name)
         convert_transparent_to_white(output_file_path.as_posix(), output_file_path.as_posix())
