@@ -508,17 +508,29 @@ class ODTConverter:
             
             # Check for positioning attributes on the element
             # ODT shapes anchored to paragraph/char inside a paragraph often have x/y coordinates
-            # We need to apply these as absolute positioning
+            # We need to apply these as absolute positioning ONLY if anchor-type is not "as-char"
+            anchor_type = child.get(f"{{{NAMESPACES['draw']}}}anchor-type")
             element_style = []
             x = child.get(f"{{{NAMESPACES['svg']}}}x")
             y = child.get(f"{{{NAMESPACES['svg']}}}y")
             width = child.get(f"{{{NAMESPACES['svg']}}}width")
             height = child.get(f"{{{NAMESPACES['svg']}}}height")
             
-            if x or y:
+            if (x or y) and anchor_type != 'as-char':
                 element_style.append("position: absolute")
                 if x: element_style.append(f"left: {x}")
                 if y: element_style.append(f"top: {y}")
+            elif anchor_type == 'as-char':
+                # As-char elements flow inline, but might have y offset (vertical-align equivalent)
+                element_style.append("display: inline-block")
+                element_style.append("position: relative")
+                if y:
+                    # ODT y for as-char is usually top offset from baseline or similar
+                    # CSS vertical-align is simpler but doesn't take lengths easily without calc
+                    # simpler to use transform translateY or top margin
+                    element_style.append(f"vertical-align: middle") # Fallback
+                    # or element_style.append(f"top: {y}")
+            
             # Note: width/height are usually handled by the specific processors, 
             # but we pass them via style for generic containers if needed.
             
@@ -644,11 +656,15 @@ class ODTConverter:
         # Check for absolute positioning
         x = frame.get(f"{{{NAMESPACES['svg']}}}x")
         y = frame.get(f"{{{NAMESPACES['svg']}}}y")
+        anchor_type = frame.get(f"{{{NAMESPACES['draw']}}}anchor-type")
         
-        if x or y:
+        if (x or y) and anchor_type != 'as-char':
             style_parts.append("position: absolute")
             if x: style_parts.append(f"left: {x}")
             if y: style_parts.append(f"top: {y}")
+        elif anchor_type == 'as-char':
+             style_parts.append("display: inline-block")
+             style_parts.append("vertical-align: text-bottom") # Approximation
         
         # Note: In ODT, frames directly in paragraphs might be positioned relative to the paragraph/page.
         # Inside a draw:frame container, children are absolutely positioned.
@@ -693,14 +709,17 @@ class ODTConverter:
             if tag == 'image':
                 frame_content_parts.append(self._process_image(child, style_parts.copy() + child_style, frame_name))
             elif tag == 'text-box':
-                # Text box may contain figure captions - process without extra styling
-                # But if it has position, we need a wrapper
+                # Text box needs to be a positioning context for shapes inside
+                # Get min-height from the text-box element
+                tb_min_height = child.get(f"{{{NAMESPACES['fo']}}}min-height", "")
+                tb_style = ["position: relative"]  # Always relative for positioned children
+                if tb_min_height:
+                    tb_style.append(f"min-height: {tb_min_height}")
+                tb_style.extend(child_style)
+                
                 content = self._process_text_box_content(child)
-                if child_style:
-                    s = "; ".join(child_style)
-                    frame_content_parts.append(f'<div style="{s}">{content}</div>')
-                else:
-                    frame_content_parts.append(content)
+                s = "; ".join(tb_style)
+                frame_content_parts.append(f'<div class="text-box-container" style="{s}">{content}</div>')
             elif tag == 'custom-shape':
                 frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style))
             elif tag == 'rect':
