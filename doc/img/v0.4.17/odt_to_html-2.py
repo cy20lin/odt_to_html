@@ -537,7 +537,6 @@ class ODTConverter:
         
         # If we have positioned shapes, ensure the paragraph can contain them
         if has_positioned_shapes:
-            para_styles.append("position: relative")
             para_styles.append("overflow: visible")
             if max_positioned_y > 0:
                 para_styles.append(f"min-height: {max_positioned_y}px")
@@ -607,8 +606,6 @@ class ODTConverter:
                     angle_rad = -transform_info['rotate']  # Negate for CSS
                     element_style.append(f"transform: rotate({angle_rad}rad)")
                     element_style.append("transform-origin: 0 0")  # ODT rotates around top-left
-                
-                element_style.append("z-index: 1")
             else:
                 # As-char elements, unset anchor, or only partial coordinates → flow inline
                 element_style.append("display: inline-block")
