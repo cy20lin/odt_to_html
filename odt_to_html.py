@@ -869,7 +869,8 @@ class ODTConverter:
             if x: style_parts.append(f"left: {x}")
             if y: style_parts.append(f"top: {y}")
         elif anchor_type == 'as-char':
-             style_parts.append("display: inline-block")
+            #  style_parts.append("display: inline-block")
+             style_parts.append("display: inline-grid")
              # Use translateY for vertical offset instead of top
              # As-char frames are anchored to the baseline, so y is an offset
              if y:
@@ -931,7 +932,8 @@ class ODTConverter:
                 
                 content = self._process_text_box_content(child)
                 s = "; ".join(tb_style)
-                frame_content_parts.append(f'<div class="text-box-container" style="{s}">{content}</div>')
+                # frame_content_parts.append(f'<div class="text-box-container" style="{s}">{content}</div>')
+                frame_content_parts.append(f'<span class="div text-box-container" style="{s}">{content}</span>')
             elif tag == 'custom-shape':
                 frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style))
             elif tag == 'rect':
@@ -950,8 +952,9 @@ class ODTConverter:
         if has_positioned_children:
             style_parts.append("position: relative")
             # Ensure it has block display to contain size
-            if anchor_type != 'as-char':
-                 style_parts.append("display: inline-block")
+            style_parts.append("display: inline-grid")
+            # if anchor_type != 'as-char':
+            #     style_parts.append("display: inline-block")
             
         # If we found content, return it
         if frame_content_parts:
@@ -960,11 +963,13 @@ class ODTConverter:
             content = '\n'.join(part for part in frame_content_parts if part)
             
             if anchor_type == 'as-char':
-                #  return f'<span class="anchor-char drawing-frame" style="{style_str}">{content}</span>'
+                # return f'<span class="anchor-char drawing-frame" style="{style_str}">{content}</span>'
+                return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
                 # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
-                return f'<div class="anchor-char drawing-frame" style="{style_str}">{content}</div>'
+                # return f'<div class="anchor-char drawing-frame" style="{style_str}">{content}</div>'
             else:
-                return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
+                # return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
+                return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
         
         # Fallback: check for ObjectReplacements
         for name in self.resources:
@@ -989,7 +994,9 @@ class ODTConverter:
                     style_name = child.get(f"{{{NAMESPACES['text']}}}style-name", "")
                     style_str = self._get_style_string(style_name)
                     style_attr = f' style="{style_str}"' if style_str else ''
-                    parts.append(f'<p class="caption"{style_attr}>{content}</p>')
+                    # NOTE: use span class=p instead of p for as-char shape/object
+                    # parts.append(f'<p class="caption"{style_attr}>{content}</p>')
+                    parts.append(f'<span class="p caption"{style_attr}>{content}</span>')
             elif tag == 'list':
                 parts.append(self._process_list(child))
         return '\n'.join(parts)
@@ -1082,9 +1089,11 @@ class ODTConverter:
         for child in shape:
             tag = child.tag.split('}')[-1]
             if tag == 'p':
-                 text_content_parts.append(f'<p style="margin:0; padding:0;">{self._process_inline_content(child)}</p>')
+                # NOTE: use <span style="display:block"> instead of <p> for as-char shape
+                # text_content_parts.append(f'<p style="margin:0; padding:0;">{self._process_inline_content(child)}</p>')
+                text_content_parts.append(f'<span class="p" style="margin:0; padding:0;">{self._process_inline_content(child)}</span>')
             elif tag == 'list':
-                 text_content_parts.append(self._process_list(child))
+                text_content_parts.append(self._process_list(child))
 
         text_html = "".join(text_content_parts)
             
@@ -1116,9 +1125,13 @@ class ODTConverter:
         content = svg
         if text_html.strip():
             # Overlay text centered
-            content += f'<div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden;">{text_html}</div>'
+            # content += f'<div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden;">{text_html}</div>'
+            # NOTE: fix as-char issue
+            content += f'<span class="div" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden;">{text_html}</span>'
 
-        return f'<div class="drawing-custom-shape" style="{style_str}">{content}</div>'
+        # NOTE
+        # return f'<div class="drawing-custom-shape" style="{style_str}">{content}</div>'
+        return f'<span class="div drawing-custom-shape" style="{style_str}">{content}</span>'
 
     def _solve_equations(self, geometry: ET.Element, frame: ET.Element) -> dict:
         """Solve ODT enhanced geometry equations."""
@@ -1461,6 +1474,7 @@ class ODTConverter:
         style_parts.append("display: inline-block")
         
         style_str = "; ".join(style_parts)
+
         return f'<div class="text-box" style="{style_str}">{content}</div>'
     
     def _process_list(self, list_elem: ET.Element, level: int = 1) -> str:
@@ -1701,6 +1715,15 @@ class ODTConverter:
         }}
         .anchor-page-content {{
             /* Position context for page anchors */
+        }}
+        /* p class for mimic p tag via span tag */
+        .p {{
+            display: block;
+            margin: 0.5em 0;
+        }}
+        .div {{
+            display: block; 
+            /* display: inline-gird; */
         }}
         p {{
             margin: 0.5em 0;
