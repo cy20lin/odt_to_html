@@ -960,6 +960,7 @@ class ODTConverter:
             content = '\n'.join(part for part in frame_content_parts if part)
             
             if anchor_type == 'as-char':
+                #  return f'<span class="anchor-char drawing-frame" style="{style_str}">{content}</span>'
                 # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
                 return f'<div class="anchor-char drawing-frame" style="{style_str}">{content}</div>'
             else:
@@ -1808,8 +1809,8 @@ Examples:
     )
     parser.add_argument('input', help='Path to the input ODT file')
     parser.add_argument('output', help='Path for the output HTML file')
-    parser.add_argument('--no-page-breaks', action='store_true',
-                        help='Hide page break separators in output HTML (shown by default)')
+    parser.add_argument('--no-page-breaks', action='store_true', default=False,
+                        help='Hide page break separators in output HTML')
     parser.add_argument('--table-respect-border', action='store_true', default=True,
                         help='Respect table border styles from ODT (default: True). Use --no-table-respect-border to disable.')
     parser.add_argument('--no-table-respect-border', action='store_false', dest='table_respect_border',
