@@ -1,0 +1,40 @@
+
+
+- v0.4.16
+  - 調整shape選轉的方式，修正旋轉公式
+- v0.4.17
+  - gemini, opus
+  - 嘗試修復失敗 修正繪製圖形位置錯誤的問題
+	- gpt 評價為治標不治本
+	- revert to v0.4.16
+- v0.4.18
+  - 引入 anchor-paragraph 修正繪製圖形位置錯誤的問題
+- v0.4.19
+  - gemini 3 pro high
+  - 引入 anchor-page, anchor-page-content
+	- note: hardcoding a4 paper layout?
+- v0.4.20
+  - calude opus 4.5
+  - base: v0.4.19
+	- FIXED: as char 不應該是為 div -> span, svg:y -> transform: translateY(<y-value>)
+	- sample: sample.odt
+	- regression: draw frame 的 bounding box 不建了
+	- sample.odt: strickthrough italtic 有問題
+	- sample_image_wrap.odt: strickthrough italtic 有問題
+	- sample.odt: 文件中可以看到多個 ... ---------- 好像是用來做 區分page的 現在不需要了
+	- sample_anchor.odt: p3 p4 文字沒有尊重圖片的位置 做wrap
+	- sample_anchor.odt: p3 p4 繪製圖形的位置異常
+- v0.4.21
+  - gemini pro 3 high
+  - base: v0.4.19
+	- sample: sample.odt
+	- FIXED: as char 不應該是為 div -> span, svg:y -> transform: translateY(<y-value>)
+	- why: let gemini do the same thing to see if any different
+	- regression: draw frame 的 bounding box 不建了
+	- sample.odt: strickthrough italtic 有問題
+	- sample_image_wrap.odt: strickthrough italtic 有問題
+	- sample.odt: 文件中可以看到多個 ... ---------- 好像是用來做 區分page的 現在不需要了
+	- sample_anchor.odt: p3 p4 文字沒有尊重圖片的位置 做wrap
+	- sample_anchor.odt: p3 p4 繪製圖形的位置異常
+- v0.4.22
+  - goal: fix regression frame bounding box missing
