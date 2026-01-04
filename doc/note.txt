@@ -38,3 +38,11 @@
 	- sample_anchor.odt: p3 p4 繪製圖形的位置異常
 - v0.4.22
   - goal: fix regression frame bounding box missing
+  - solution: workaround
+    - use tag <div> instead of <span>, as span doesn't allow nesting div tags
+	- as-char participates in inline layout
+	- svg:y is ignored or clamped
+	- baseline offset precision is deferred
+  - issue:
+    - the text box in figure 3 is a litte bit off, like offset downward for space of a line
+	

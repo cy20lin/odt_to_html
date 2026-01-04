@@ -873,7 +873,9 @@ class ODTConverter:
              # Use translateY for vertical offset instead of top
              # As-char frames are anchored to the baseline, so y is an offset
              if y:
-                 style_parts.append(f"transform: translateY({y})")
+                # WORKAROUND: In this workaround, the svg:y value is ignored when anchor-type is as-char
+                # style_parts.append(f"transform: translateY({y})")
+                pass
              # style_parts.append("vertical-align: text-bottom") # Removing approximation, letting layout handle it or translateY
         
         # Note: In ODT, frames directly in paragraphs might be positioned relative to the paragraph/page.
@@ -958,9 +960,10 @@ class ODTConverter:
             content = '\n'.join(part for part in frame_content_parts if part)
             
             if anchor_type == 'as-char':
-                 return f'<span class="anchor-char drawing-frame" style="{style_str}">{content}</span>'
+                # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
+                return f'<div class="anchor-char drawing-frame" style="{style_str}">{content}</div>'
             else:
-                 return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
+                return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
         
         # Fallback: check for ObjectReplacements
         for name in self.resources:
