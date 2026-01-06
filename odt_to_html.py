@@ -23,6 +23,7 @@ import zipfile
 from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
+import traceback
 
 # ODF XML namespaces
 NAMESPACES = {
@@ -42,6 +43,30 @@ NAMESPACES = {
 # Register namespaces for ElementTree
 for prefix, uri in NAMESPACES.items():
     ET.register_namespace(prefix, uri)
+
+def extract_number_and_unit(text):
+    """
+    Extracts the first number (integer or float) and its unit from a string.
+    
+    Returns a tuple (number_as_float, unit_string) or (None, None) if no match.
+    """
+    # Regex pattern explanation:
+    # (?P<number>[+-]?\\d*\\.?\\d+) : Captures the number part (float or int) into a group named 'number'.
+    # \\s?                      : Matches an optional space.
+    # (?P<unit>[a-zA-Z]+)       : Captures the unit part (letters only) into a group named 'unit'.
+    pattern = re.compile(r'(?P<number>[+-]?\d*\.?\d+)\s*(?P<unit>[a-zA-Z]*)')
+    
+    match = pattern.match(text.strip())
+    
+    if match:
+        # Access the named groups
+        number_str = match.group('number')
+        unit_str = match.group('unit')
+        if not unit_str: unit_str = None
+        # Convert the number string to a float
+        return float(number_str), unit_str
+    else:
+        return None, None
 
 
 class ODTConverter:
@@ -875,6 +900,7 @@ class ODTConverter:
              # As-char frames are anchored to the baseline, so y is an offset
              if y:
                 # WORKAROUND: In this workaround, the svg:y value is ignored when anchor-type is as-char
+                # style_parts.append(f"vertical-align: {y}")
                 # style_parts.append(f"transform: translateY({y})")
                 pass
              # style_parts.append("vertical-align: text-bottom") # Removing approximation, letting layout handle it or translateY
@@ -964,11 +990,35 @@ class ODTConverter:
             
             if anchor_type == 'as-char':
                 # return f'<span class="anchor-char drawing-frame" style="{style_str}">{content}</span>'
-                return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
                 # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
                 # return f'<div class="anchor-char drawing-frame" style="{style_str}">{content}</div>'
+                # return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
+                # return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
+                svgx_anchor_style_str = ' style="grid-template-colum: {x} auto"' if x else ''
+                y_value = extract_number_and_unit(y)[0] if isinstance(y,str) else None
+                svgy_align_elements_str  = ''
+                if y_value is not None:
+                    if y_value >= 0:
+                        svgy_align_elements_str = (
+                            f'<span class="svgy-positive-aligner" style="display: inline-block"/>',
+                            f'<span class="svgy-positive-padder" style="display: inline-block; height: {y}"/>',
+                            # f'<span class="svgy-negative-aligner-padder" style="display: none;"/>',
+                        )
+                    elif y_value < 0:
+                        svgy_align_elements_str = (
+                            # f'<span class="svgy-positive-aligner" style="display: none;"/>',
+                            # f'<span class="svgy-positive-padder" style="display: none;"/>',
+                            f'<span class="svgy-negative-aligner-padder" style="display: inline-block; height: {y}"/>'
+                        )
+                return (
+                    f'<span class="anchor-as-char"{svgx_anchor_style_str}>' 
+                    f'{svgy_align_elements_str}' 
+                    f'<span class="div draw-frame" style="{style_str}">{content}</span>'
+                    f'</span>'
+                )
             else:
                 # return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
+                # return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
                 return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
         
         # Fallback: check for ObjectReplacements
@@ -1716,6 +1766,36 @@ class ODTConverter:
         .anchor-page-content {{
             /* Position context for page anchors */
         }}
+        .anchor-as-char {{
+            display: inline-grid;
+            position: relative;
+            border: 1px solid black;
+            grid-template-columns: 0 auto; /* replace first item with custom svgx */
+            grid-template-rows: 0 auto auto;
+        }}
+        .svgy-positive-aligner {{
+            display: inline-block;
+            grid-column: 1;
+            grid-row: 1;
+            background-color: aqua;
+        }}
+        .svgy-positive-padder {{
+            display: inline-block;
+            grid-column: 1;
+            grid-row: 2;
+            background-color: chocolate;
+        }}
+        .svgy-negative-aligner-padder {{
+            display: inline-block;
+            grid-column: 1;
+            grid-row: 3;
+            background-color: cornflowerblue;
+        }}
+        .draw-frame {{
+            display: inline-block;
+            grid-column: 2;
+            grid-row: 3;
+        }}
         /* p class for mimic p tag via span tag */
         .p {{
             display: block;
@@ -1881,6 +1961,8 @@ Examples:
         sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
+        traceback.print_exception(e)
+        print("Exit due to error.")
         sys.exit(1)
 
 

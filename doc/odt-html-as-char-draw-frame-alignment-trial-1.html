@@ -1,0 +1,79 @@
+<html>
+
+<head>
+    <style>
+        .prev {
+            display: block;
+            width: 1in;
+            height: 1in;
+            background-color: antiquewhite;
+        }
+
+        .anchor {
+            display: inline-flex;
+            align-items: flex-start;
+            position: relative;
+            /*for debug*/
+            width: 2in;
+            background-color: purple;
+        }
+        /* this is to align external/internal baseline */
+        .zero{
+            display: inline-block;
+            /* height: 1em; */ /*this is abs(svg:y) for svg:y < 0 */
+            /*for debug*/
+            width: 0.5in;
+            background-color:forestgreen;
+        }
+        .first{
+            display: inline-block;
+            height: 3in; /*this is abs(svg:y) for svg:y < 0*/
+            /*for debug*/
+            width: 0.5in;
+            background-color: blue;
+        }
+
+        .item {
+            display: inline-block;
+            /*for debug*/
+            width: 1in;
+            height: 5in;
+            background-color: cadetblue;
+        }
+
+        .next {
+            display: block;
+            width: 1in;
+            height: 1in;
+            background-color: antiquewhite;
+        }
+        .anchor2 {
+            display: inline-grid;
+            align-items: flex-start;
+            position: relative;
+            flex-flow: column;
+            /*for debug*/
+            width: 2in;
+            background-color: purple;
+        }
+    </style>
+</head>
+
+<body>
+    <span class="prev"></span>
+    ------
+    <span class="anchor"> 
+        <span class="first"></span>
+        <span class="item"></span>
+    </span><span 
+    style="display:inline-flex; width: 0.2in; height: 1in; background-color: antiquewhite;">
+    </span><span class="anchor2">
+        <span class="zero"></span>
+        <span class="first"></span>
+        <span class="item"></span>
+    </span></span>
+    ------
+    <span class="next"></span>
+</body>
+
+</html>

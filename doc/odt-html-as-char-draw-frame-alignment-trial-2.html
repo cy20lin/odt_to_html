@@ -1,0 +1,60 @@
+<html>
+
+<head>
+    <style>
+        .prev {
+            display: block;
+            width: 1in;
+            height: 1in;
+            background-color: antiquewhite;
+        }
+
+        .anchor {
+            display: inline-flex;
+            align-items: flex-start;
+            flex-direction: column;
+            vertical-align: text-top;
+            position: relative;
+            /*for debug*/
+            width: 2in;
+            background-color: purple;
+        }
+        /* this is to align external/internal baseline */
+        .first{
+            display: inline-block;
+            height: 3in; /*this is abs(svg:y) for svg:y < 0*/
+            /*for debug*/
+            width: 0.5in;
+            background-color: blue;
+        }
+
+        .item {
+            display: inline-block;
+            /*for debug*/
+            width: 1in;
+            height: 5in;
+            background-color: cadetblue;
+        }
+
+        .next {
+            display: block;
+            width: 1in;
+            height: 1in;
+            background-color: antiquewhite;
+        }
+    </style>
+</head>
+
+<body>
+    <span class="prev"></span>
+    ____
+    <span class="anchor"> 
+        <span class="first" style="height: 1em;background-color: aliceblue;"></span>
+        <span class="first"></span>
+        <span class="item"></span>
+    </span>
+    ------
+    <span class="next"></span>
+</body>
+
+</html>
