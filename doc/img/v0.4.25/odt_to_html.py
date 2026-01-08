@@ -990,7 +990,7 @@ class ODTConverter:
             # and just let the text flow through, so setting opacity and/or z-index
             # to enable user to be able to view both.
             if is_position_absolute:
-                style_parts.append("opacity: 0.9")
+                # style_parts.append("opacity: 0.9")
                 style_parts.append("z-index: -10")
             # Wrap in the main frame div
             style_str = "; ".join(style_parts)
@@ -1759,6 +1759,7 @@ class ODTConverter:
     <title>Converted Document</title>
     <style>
         body {{
+            position: relative;
             z-index: -90;
             font-family: 'Noto Serif', 'Times New Roman', serif;
             line-height: 1.6;
@@ -1768,6 +1769,7 @@ class ODTConverter:
             background-color: #f0f0f0;
         }}
         .anchor-page {{
+            position: relative;
             z-index: -80;
             background-color: #fff;
             margin: 0 auto 30px auto;

@@ -893,6 +893,12 @@ class ODTConverter:
         if not anchor_type:
             anchor_type = frame.get(f"{{{NAMESPACES['text']}}}anchor-type")
         
+        if (x or y) and anchor_type != 'as-char':
+            style_parts.append("position: absolute")
+            if x: style_parts.append(f"left: {x}")
+            if y: style_parts.append(f"top: {y}")
+        elif anchor_type == 'as-char':
+            pass
         
         # Note: In ODT, frames directly in paragraphs might be positioned relative to the paragraph/page.
         # Inside a draw:frame container, children are absolutely positioned.
@@ -918,8 +924,8 @@ class ODTConverter:
             if cx or cy:
                 has_positioned_children = True
                 child_style.append("position: absolute")
-                # if cx: child_style.append(f"left: {cx}")
-                # if cy: child_style.append(f"top: {cy}")
+                if cx: child_style.append(f"left: {cx}")
+                if cy: child_style.append(f"top: {cy}")
             if cw: child_style.append(f"width: {cw}")
             if ch: child_style.append(f"height: {ch}")
             
@@ -936,7 +942,6 @@ class ODTConverter:
 
             if tag == 'image':
                 frame_content_parts.append(self._process_image(child, style_parts.copy() + child_style, frame_name))
-                # frame_content_parts.append(self._process_image(child, child_style, frame_name))
             elif tag == 'text-box':
                 # Text box needs to be a positioning context for shapes inside
                 # Get min-height from the text-box element
@@ -963,35 +968,15 @@ class ODTConverter:
                 replacement_img = frame.find(f".//{{{NAMESPACES['draw']}}}image")
                 if replacement_img is not None:
                     frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name))
-                    # frame_content_parts.append(self._process_image(replacement_img, child_style, frame_name))
         
         # If we have positioned children, the container must be relative
-        # if as-char  should relative to anchor ?
-        position_style_parts = []
-        position_style_str = ''
-        is_position_absolute = False
+        # FIXME: should relative to anchor ?
+        style_position_str = ''
         if has_positioned_children:
-            position_style_parts.append("position: relative")
-        elif (x or y) and anchor_type != 'as-char':
-            position_style_parts.append("position: absolute")
-            is_position_absolute = True
-            if x: position_style_parts.append(f"left: {x}")
-            if y: position_style_parts.append(f"top: {y}")
-        elif anchor_type == 'as-char':
-            position_style_parts.append("position: relative")
-            # as-char svg:x & svg:y are taken care by the helper (anchor, aligner, padder) later
-            pass
-        position_style_str = ';'.join(position_style_parts)
+            style_position_str = "position: relative"
             
         # If we found content, return it
         if frame_content_parts:
-            # WORKAROUND: To provide both view for absolute objects and text flows, 
-            # as current absolute objects doesn't have collision box, 
-            # and just let the text flow through, so setting opacity and/or z-index
-            # to enable user to be able to view both.
-            if is_position_absolute:
-                style_parts.append("opacity: 0.9")
-                style_parts.append("z-index: -10")
             # Wrap in the main frame div
             style_str = "; ".join(style_parts)
             content = '\n'.join(part for part in frame_content_parts if part)
@@ -1020,7 +1005,7 @@ class ODTConverter:
                     # the height is defaulted to auto, to match the height of the contained frame
                     svgy_align_elements_str = f'<span class="svgy-negative-aligner-padder"></span>'
                 return (
-                    f'<span style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;line-height=0;{position_style_str}">' 
+                    f'<span style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;line-height=0;{style_position_str}">' 
                     f'{svgy_align_elements_str}' 
                     f'<span class="div draw-frame" style="grid-column:2;grid-row:3;{style_str}">{content}</span>'
                     f'</span>'
@@ -1028,7 +1013,7 @@ class ODTConverter:
             else:
                 # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
                 # NOTE: Use tag div to ensure it has block display to contain size
-                return f'<span class="div draw-frame" style="{style_str};{position_style_str}">{content}</span>'
+                return f'<span class="div draw-frame" style="{style_str};{style_position_str}">{content}</span>'
         
         # Fallback: check for ObjectReplacements
         for name in self.resources:
@@ -1759,7 +1744,6 @@ class ODTConverter:
     <title>Converted Document</title>
     <style>
         body {{
-            z-index: -90;
             font-family: 'Noto Serif', 'Times New Roman', serif;
             line-height: 1.6;
             margin: 0;
@@ -1768,7 +1752,6 @@ class ODTConverter:
             background-color: #f0f0f0;
         }}
         .anchor-page {{
-            z-index: -80;
             background-color: #fff;
             margin: 0 auto 30px auto;
             box-shadow: 0 4px 8px rgba(0,0,0,0.15);

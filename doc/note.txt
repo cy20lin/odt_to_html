@@ -45,4 +45,13 @@
 	- baseline offset precision is deferred
   - issue:
     - the text box in figure 3 is a litte bit off, like offset downward for space of a line
-	
+- v0.4.23
+  - goal: fix as-char anchored frame layout
+  - done: fixed with helper span inline-grid and inline-block for padding and alignment
+- v0.4.24:
+  - goal: fix as-char anchored frame layout not incorrect behavior
+  - note: `<span>` must be closed with `</span>`, writing `<span/>` is invalid
+  - done: ensure the behavior when svg:y is not specified 
+  - issue:
+	- page/paragraph: positioning issue
+	- 
