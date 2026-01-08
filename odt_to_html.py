@@ -44,29 +44,33 @@ NAMESPACES = {
 for prefix, uri in NAMESPACES.items():
     ET.register_namespace(prefix, uri)
 
-def extract_number_and_unit(text):
+def extract_sign_number_unit_str(text):
     """
     Extracts the first number (integer or float) and its unit from a string.
     
     Returns a tuple (number_as_float, unit_string) or (None, None) if no match.
     """
     # Regex pattern explanation:
-    # (?P<number>[+-]?\\d*\\.?\\d+) : Captures the number part (float or int) into a group named 'number'.
+    # (?P<sign>[-+]*)
+    # (?P<number>\\d*\\.?\\d+) : Captures the number part (float or int) into a group named 'number'.
     # \\s?                      : Matches an optional space.
     # (?P<unit>[a-zA-Z]+)       : Captures the unit part (letters only) into a group named 'unit'.
-    pattern = re.compile(r'(?P<number>[+-]?\d*\.?\d+)\s*(?P<unit>[a-zA-Z]*)')
-    
+    pattern = re.compile(r'(?P<sign>[-+]*)(?P<number>\d*\.?\d+)\s*(?P<unit>[a-zA-Z]*)')
     match = pattern.match(text.strip())
-    
     if match:
         # Access the named groups
+        sign_str = match.group('sign')
         number_str = match.group('number')
         unit_str = match.group('unit')
-        if not unit_str: unit_str = None
         # Convert the number string to a float
-        return float(number_str), unit_str
+        return sign_str, number_str, unit_str
     else:
-        return None, None
+        return None
+
+def is_sign_str_negative(sign_str: str):
+    minus_count = sign_str.count('-')
+    return minus_count % 2 == 1
+    
 
 
 class ODTConverter:
@@ -894,16 +898,7 @@ class ODTConverter:
             if x: style_parts.append(f"left: {x}")
             if y: style_parts.append(f"top: {y}")
         elif anchor_type == 'as-char':
-            #  style_parts.append("display: inline-block")
-             style_parts.append("display: inline-grid")
-             # Use translateY for vertical offset instead of top
-             # As-char frames are anchored to the baseline, so y is an offset
-             if y:
-                # WORKAROUND: In this workaround, the svg:y value is ignored when anchor-type is as-char
-                # style_parts.append(f"vertical-align: {y}")
-                # style_parts.append(f"transform: translateY({y})")
-                pass
-             # style_parts.append("vertical-align: text-bottom") # Removing approximation, letting layout handle it or translateY
+            pass
         
         # Note: In ODT, frames directly in paragraphs might be positioned relative to the paragraph/page.
         # Inside a draw:frame container, children are absolutely positioned.
@@ -975,51 +970,50 @@ class ODTConverter:
                     frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name))
         
         # If we have positioned children, the container must be relative
+        # FIXME: should relative to anchor ?
+        style_position_str = ''
         if has_positioned_children:
-            style_parts.append("position: relative")
-            # Ensure it has block display to contain size
-            style_parts.append("display: inline-grid")
-            # if anchor_type != 'as-char':
-            #     style_parts.append("display: inline-block")
+            style_position_str = "position: relative"
             
         # If we found content, return it
         if frame_content_parts:
             # Wrap in the main frame div
             style_str = "; ".join(style_parts)
             content = '\n'.join(part for part in frame_content_parts if part)
-            
             if anchor_type == 'as-char':
-                # return f'<span class="anchor-char drawing-frame" style="{style_str}">{content}</span>'
-                # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
-                # return f'<div class="anchor-char drawing-frame" style="{style_str}">{content}</div>'
-                # return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
-                # return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
-                svgx_anchor_style_str = ' style="grid-template-colum: {x} auto"' if x else ''
-                y_value = extract_number_and_unit(y)[0] if isinstance(y,str) else None
-                svgy_align_elements_str  = ''
-                if y_value is not None:
-                    if y_value >= 0:
-                        svgy_align_elements_str = (
-                            f'<span class="svgy-positive-aligner" style="display: inline-block"/>',
-                            f'<span class="svgy-positive-padder" style="display: inline-block; height: {y}"/>',
-                            # f'<span class="svgy-negative-aligner-padder" style="display: none;"/>',
+                # Process svg:x
+                x_is_defined = isinstance(x, str)
+                x_value = 0
+                if x_is_defined:
+                    x_sign, x_number, x_unit = extract_sign_number_unit_str(x)
+                    x_abs = x_number + x_unit
+                    x_value = x_abs
+                # Process svg:y
+                y_is_defined = isinstance(y, str)
+                if y_is_defined:
+                    y_sign, y_number, y_unit = extract_sign_number_unit_str(y)
+                    y_is_zero_or_positive = not is_sign_str_negative(y_sign) 
+                    y_abs = y_number + y_unit
+                    if y_is_zero_or_positive:
+                        svgy_align_elements_str:str = (
+                            f'<span class="svgy-positive-aligner"></span>'
+                            f'<span class="svgy-positive-padder" style="height:{y_abs}"></span>'
                         )
-                    elif y_value < 0:
-                        svgy_align_elements_str = (
-                            # f'<span class="svgy-positive-aligner" style="display: none;"/>',
-                            # f'<span class="svgy-positive-padder" style="display: none;"/>',
-                            f'<span class="svgy-negative-aligner-padder" style="display: inline-block; height: {y}"/>'
-                        )
+                    else:
+                        svgy_align_elements_str = f'<span class="svgy-negative-aligner-padder" style="height:{y_abs}"></span>'
+                else:
+                    # the height is defaulted to auto, to match the height of the contained frame
+                    svgy_align_elements_str = f'<span class="svgy-negative-aligner-padder"></span>'
                 return (
-                    f'<span class="anchor-as-char"{svgx_anchor_style_str}>' 
+                    f'<span style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;line-height=0;{style_position_str}">' 
                     f'{svgy_align_elements_str}' 
-                    f'<span class="div draw-frame" style="{style_str}">{content}</span>'
+                    f'<span class="div draw-frame" style="grid-column:2;grid-row:3;{style_str}">{content}</span>'
                     f'</span>'
                 )
             else:
-                # return f'<div class="drawing-frame" style="{style_str}">{content}</div>'
-                # return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
-                return f'<span class="div drawing-frame" style="{style_str}">{content}</span>'
+                # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
+                # NOTE: Use tag div to ensure it has block display to contain size
+                return f'<span class="div draw-frame" style="{style_str};{style_position_str}">{content}</span>'
         
         # Fallback: check for ObjectReplacements
         for name in self.resources:
@@ -1771,6 +1765,7 @@ class ODTConverter:
             position: relative;
             grid-template-columns: 0 auto; /* replace first item with custom svgx */
             grid-template-rows: 0 auto auto;
+            line-height: 0;
         }}
         .svgy-positive-aligner {{
             display: inline-block;
@@ -1791,9 +1786,11 @@ class ODTConverter:
             background-color: cornflowerblue;
         }}
         .draw-frame {{
-            display: inline-block;
-            grid-column: 2;
-            grid-row: 3;
+            /* display is set by div by default for draw-frame */
+            /* either of following will work, maybe behave slightly different */
+            /* display: inline-grid;*/ 
+            /* display: block;*/ 
+            /* display: inline-block; */
         }}
         /* p class for mimic p tag via span tag */
         .p {{
@@ -1802,7 +1799,6 @@ class ODTConverter:
         }}
         .div {{
             display: block; 
-            /* display: inline-gird; */
         }}
         p {{
             margin: 0.5em 0;

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>ODT as-char frame to HTML representation demo</title>
+  <title>Title</title>
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont;
+      padding: 20px;
+    }
+
+    .controls {
+      margin-bottom: 20px;
+    }
+
+    .controls label {
+      display: block;
+      margin: 8px 0;
+    }
+
+    .demoarea {
+      display: block;
+      flex-direction: column;
+      border: 1px solid red;
+      min-width: 1cm;
+      min-height: 1cm;
+    }
+
+    /* not working */
+    /* .anchor-as-char { */
+      /* width: 100%-2cm; */
+      /* display: inline-table; */
+    /* } */
+    .anchor-as-char {
+      display: inline-grid;
+      /* align-items: flex-start; */
+      position: relative;
+      border: 1px solid black;
+      grid-template-columns: 0 auto;
+      grid-template-rows: 0cm auto auto;
+      line-height: 0;
+    }
+
+    /* .test { width: 1cm; height: 1cm; } */
+    /* .test {  } */
+    /*use inline-block to fit content by default*/
+    .svgy-positive-aligner {
+      display: inline-block;
+      grid-column: 1;
+      grid-row: 1;
+      background-color: aqua;
+    }
+
+    .svgy-positive-padder {
+      display: inline-block;
+      grid-column: 1;
+      grid-row: 2;
+      background-color: chocolate;
+    }
+
+    .svgy-negative-aligner-padder {
+      display: inline-block;
+      grid-column: 1;
+      grid-row: 3;
+      background-color: cornflowerblue;
+    }
+
+    .draw-frame {
+      display: inline-block;
+      grid-column: 2;
+      grid-row: 3;
+      height: fit-content; /* make outer fit the content */
+    }
+  </style>
+</head>
+
+<body>
+  <h1> ODT as-char frame to HTML representation demo</h1>
+  <h2>Description</h2>
+  <p>
+    This web page demos how to enulate ODT <i>draw:frame</i> with its <i>text:anchor</i> setted to <i>as-char</i> in
+    html.
+  </p>
+
+  <h2>Controls</h2>
+
+  <div class="controls">
+    <label>
+      <b>svg:x</b>: <input id="xSlider" type="range" min="-10" max="10" step="0.1" value="0"> <span id="xValue">0</span>
+    </label>
+
+    <label>
+      <b>svg:y</b>: <input id="ySlider" type="range" min="-10" max="10" step="0.1" value="0">
+      <span id="yValue">0</span>
+    </label>
+  </div>
+
+  <p>note: svg:x with negative value is treated like svg:x=0</p>
+
+  <h2>Demo area</h2>
+
+
+  <div class="demoarea">
+    <p>This is a paragraph.</p>
+    <p>
+      Following demo that some text wrap around a as-char anchored frame, such frame contains two inner elements. 
+      Two element are defined using span with block display, one colered aqua, other colored red;
+    </p>
+    <p>
+      Note: for following to work remember you cannot use span as &ltspan ... /&gt, this will not work.
+    </p>
+    <p>
+      this is a paragraph with some text ___
+      <span class="anchor-as-char" id="anchor1">
+        <span class="svgy-positive-aligner" id="item1"></span>
+        <span class="svgy-positive-padder" id="item2"></span>
+        <span class="svgy-negative-aligner-padder" id="item3"></span>
+        <span class="draw-frame" style="width: 1.6cm; background-color: darkolivegreen;" id="item4">
+          <span style="display: block; background-color: aqua; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+          <span style="display: block; background-color: red; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+        </span>
+      </span>___ around odt like as-char anchored frame.
+      the contained frame is span with inline-block display.
+    </p>
+    <p>Some text here, here, and here.</p>
+    <p>Below is wrongly configured frame</p>
+    ___<span class="anchor-as-char" id="anchor2">
+      <!-- <span class="svgy-positive-aligner" id="item5"></span>
+      <span class="svgy-positive-padder" id="item6"></span>
+      <span class="svgy-negative-aligner-padder" id="item7"></span> -->
+      <span class="draw-frame" style="width: 1.6cm; background-color: darkolivegreen; display: inline-grid;" id="item8">
+        <span style="display: block; background-color: aqua; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+        <span style="display: block; background-color: red; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+      </span>
+    </span>___, the frame is defined using span with inline-grid display and with NO helper spacing elemnets,
+     such frame display configuration will leak the vertical alignment of the inner object,
+     which is not the behavior wanted.
+    <p>Some text here.</p>
+    <p>
+      When svg:y is None: __<span class="anchor-as-char" style="display: inline-block; line-height: 0;">
+        <!-- display none doesn't work here, these three will become three spaces -->
+        <!-- <span class="svgy-positive-aligner" id="item5" style="display: none;"></span>
+        <span class="svgy-positive-padder" id="item6" style="display: none;"></span>
+        <span class="svgy-negative-aligner-padder" id="item7" style="display: none;"></span> -->
+        <span class="draw-frame" style="background-color: darkolivegreen;">
+          <span>
+            <span
+              style="display: block; background-color: aqua; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+            <span
+              style="display: block; background-color: red; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+          </span>
+        </span>
+      </span>__, the anchor-as-char container should be styled as inline-block.
+    </p>
+    <p>
+      When svg:y is None: __<span class="anchor-as-char" style="display: inline-grid; line-height: 0;">
+        <!-- display none doesn't work here, these three will become three spaces -->
+        <!-- <span class="svgy-positive-aligner" id="item5" style="display: none;"></span> -->
+        <!-- <span class="svgy-positive-padder" id="item6" style="display: none;"></span> -->
+        <span class="svgy-negative-aligner-padder" style="display: inline-block; height: auto;"></span>
+        <span class="draw-frame" style="background-color: darkolivegreen;">
+          <span>
+            <span
+              style="display: block; background-color: aqua; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+            <span
+              style="display: block; background-color: orange; border: 3px sold black; height: 1cm;width: 1cm;;"></span>
+          </span>
+        </span>
+      </span>__, the anchor-as-char container should be styled as inline-block.
+    </p>
+    <p>more text here.</p>
+  </div>
+
+  <script>
+    const xSlider = document.getElementById("xSlider");
+    const ySlider = document.getElementById("ySlider");
+    const xValue = document.getElementById("xValue");
+    const yValue = document.getElementById("yValue");
+    // const anchor = document.querySelector(".anchor-as-char");
+    // const item1 = document.querySelector(".svgy-positive-aligner");
+    // const item2 = document.querySelector(".svgy-positive-padder");
+    // const item3 = document.querySelector(".svgy-negative-aligner-padder");
+    // const item4 = document.querySelector(".draw-frame");
+    const anchor1 = document.getElementById("anchor1");
+    const anchor2 = document.getElementById("anchor2");
+    const item1 = document.getElementById("item1");
+    const item2 = document.getElementById("item2");
+    const item3 = document.getElementById("item3");
+    const item4 = document.getElementById("item4");
+    const item5 = document.getElementById("item5");
+    const item6 = document.getElementById("item6");
+    const item7 = document.getElementById("item7");
+    const item8 = document.getElementById("item8");
+
+
+    function updateGrid() {
+      const x = parseFloat(xSlider.value);
+      const y = parseFloat(ySlider.value);
+      xValue.textContent = x.toFixed(1);
+      yValue.textContent = y.toFixed(1);
+
+      const size = Math.abs(x) + "cm";
+      const xUnit = Math.abs(Math.max(x, 0)) + "cm";
+      const yUnit = Math.abs(y) + "cm";
+
+      if (y >= 0) {
+        anchor1.style.gridTemplateColumns = xUnit + " auto";
+        item1.style.display = "inline-block";
+        item2.style.display = "inline-block";
+        item3.style.display = "none";
+        item2.style.height = yUnit;
+      } else if (y < 0) {
+        anchor1.style.gridTemplateColumns = xUnit + " auto";
+        item1.style.display = "none";
+        item2.style.display = "none";
+        item3.style.display = "inline-block";
+        item3.style.height = yUnit;
+      } else {
+        item1.style.display = "none";
+        item2.style.display = "none";
+        item3.style.display = "none";
+      }
+      if (y >= 0) {
+        anchor2.style.gridTemplateColumns = xUnit + " auto";
+        item5.style.display = "inline-block";
+        item6.style.display = "inline-block";
+        item7.style.display = "none";
+        item6.style.height = yUnit;
+      } else if (y < 0) {
+        anchor2.style.gridTemplateColumns = xUnit + " auto";
+        item5.style.display = "none";
+        item6.style.display = "none";
+        item7.style.display = "inline-block";
+        item7.style.height = yUnit;
+      } else {
+        item5.style.display = "none";
+        item6.style.display = "none";
+        item7.style.display = "none";
+      }
+    }
+    xSlider.addEventListener("input", updateGrid);
+    ySlider.addEventListener("input", updateGrid);
+
+    updateGrid();
+  </script>
+
+</body>
+
+</html>

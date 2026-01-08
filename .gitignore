@@ -5,6 +5,7 @@
 !.gitignore
 sample*/
 stash/
+old/
 tmp/
 out/
 other/
