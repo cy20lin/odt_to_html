@@ -5,44 +5,44 @@
 - v0.4.17
   - gemini, opus
   - 嘗試修復失敗 修正繪製圖形位置錯誤的問題
-	- gpt 評價為治標不治本
-	- revert to v0.4.16
+  - gpt 評價為治標不治本
+  - revert to v0.4.16
 - v0.4.18
   - 引入 anchor-paragraph 修正繪製圖形位置錯誤的問題
 - v0.4.19
   - gemini 3 pro high
   - 引入 anchor-page, anchor-page-content
-	- note: hardcoding a4 paper layout?
+  - note: hardcoding a4 paper layout?
 - v0.4.20
   - calude opus 4.5
   - base: v0.4.19
-	- FIXED: as char 不應該是為 div -> span, svg:y -> transform: translateY(<y-value>)
-	- sample: sample.odt
-	- regression: draw frame 的 bounding box 不建了
-	- sample.odt: strickthrough italtic 有問題
-	- sample_image_wrap.odt: strickthrough italtic 有問題
-	- sample.odt: 文件中可以看到多個 ... ---------- 好像是用來做 區分page的 現在不需要了
-	- sample_anchor.odt: p3 p4 文字沒有尊重圖片的位置 做wrap
-	- sample_anchor.odt: p3 p4 繪製圖形的位置異常
+  - FIXED: as char 不應該是為 div -> span, svg:y -> transform: translateY(<y-value>)
+  - sample: sample.odt
+  - regression: draw frame 的 bounding box 不建了
+  - sample.odt: strickthrough italtic 有問題
+  - sample_image_wrap.odt: strickthrough italtic 有問題
+  - sample.odt: 文件中可以看到多個 ... ---------- 好像是用來做 區分page的 現在不需要了
+  - sample_anchor.odt: p3 p4 文字沒有尊重圖片的位置 做wrap
+  - sample_anchor.odt: p3 p4 繪製圖形的位置異常
 - v0.4.21
   - gemini pro 3 high
   - base: v0.4.19
-	- sample: sample.odt
-	- FIXED: as char 不應該是為 div -> span, svg:y -> transform: translateY(<y-value>)
-	- why: let gemini do the same thing to see if any different
-	- regression: draw frame 的 bounding box 不建了
-	- sample.odt: strickthrough italtic 有問題
-	- sample_image_wrap.odt: strickthrough italtic 有問題
-	- sample.odt: 文件中可以看到多個 ... ---------- 好像是用來做 區分page的 現在不需要了
-	- sample_anchor.odt: p3 p4 文字沒有尊重圖片的位置 做wrap
-	- sample_anchor.odt: p3 p4 繪製圖形的位置異常
+  - sample: sample.odt
+  - FIXED: as char 不應該是為 div -> span, svg:y -> transform: translateY(<y-value>)
+  - why: let gemini do the same thing to see if any different
+  - regression: draw frame 的 bounding box 不建了
+  - sample.odt: strickthrough italtic 有問題
+  - sample_image_wrap.odt: strickthrough italtic 有問題
+  - sample.odt: 文件中可以看到多個 ... ---------- 好像是用來做 區分page的 現在不需要了
+  - sample_anchor.odt: p3 p4 文字沒有尊重圖片的位置 做wrap
+  - sample_anchor.odt: p3 p4 繪製圖形的位置異常
 - v0.4.22
   - goal: fix regression frame bounding box missing
   - solution: workaround
     - use tag <div> instead of <span>, as span doesn't allow nesting div tags
-	- as-char participates in inline layout
-	- svg:y is ignored or clamped
-	- baseline offset precision is deferred
+  - as-char participates in inline layout
+  - svg:y is ignored or clamped
+  - baseline offset precision is deferred
   - issue:
     - the text box in figure 3 is a litte bit off, like offset downward for space of a line
 - v0.4.23
@@ -53,5 +53,18 @@
   - note: `<span>` must be closed with `</span>`, writing `<span/>` is invalid
   - done: ensure the behavior when svg:y is not specified 
   - issue:
-	- page/paragraph: positioning issue
-	- 
+  - page/paragraph: positioning issue
+- v0.4.25:
+  - fix: image drafting issue
+  - done: workaround for odt text wrap issue, just let it flow through
+- v0.4.26:
+  - fix: Respect and stop propagate text-decoration when linebreak, and resume text-decoration after line break
+  - issue: should implemenent and respect text:span line-decoration cancelation when value is none
+    - the none prop will unset parent text-decoration style ()
+  - current behavior is treating setted "none" and *unspecified* value as DISABLE decoration which is not true
+  - todo: when the attribute is unspecified, the child element should RESPECT attribute from parent element
+  - desired behavior
+    - none -> unset
+      - style:text-line-through-style="none"
+      - style:text-line-through-type="none" 
+    - *unspecified* -> inherit from parent

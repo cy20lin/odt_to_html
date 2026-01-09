@@ -24,6 +24,7 @@ from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
 import traceback
+from typing import Callable, Optional
 
 # ODF XML namespaces
 NAMESPACES = {
@@ -70,8 +71,51 @@ def extract_sign_number_unit_str(text):
 def is_sign_str_negative(sign_str: str):
     minus_count = sign_str.count('-')
     return minus_count % 2 == 1
-    
 
+from pydantic import BaseModel, ConfigDict
+
+class TextDecoration(BaseModel):
+    model_config = ConfigDict(extra='forbid') # Forbid extra fields
+    line_through: bool | None = None
+    underline: bool | None = None
+
+    def inherit(self, base: "TextDecoration") -> "TextDecoration":
+        return TextDecoration(
+            line_through = base.line_through if base.line_through is not None else self.line_through,
+            underline   = base.underline     if base.underline     is not None else self.underline,
+        )
+    def is_setted(self) -> bool:
+        # return self.line_through is not None and self.underline is not None
+        return self.line_through or self.underline 
+    
+    def wrap(self, content: str):
+        if content and self.is_setted():
+            return f'<span{self._as_style_str()}>{content}</span>'
+        else:
+            return content
+
+    def nowrap(self, content: str):
+        if content and self.is_setted():
+            return f'</span>{content}<span{self._as_style_str()}>'
+        else:
+            return content
+
+    def as_wrapped_str(self, format:str = ' style={}') -> str:
+        decorations = []
+        if self.line_through: decorations.append('line-through')
+        if self.underline: decorations.append('underline')
+        decorations_value_str = ' '.join(decorations)
+        style_str = decorations_value_str
+        return format.format(style_str)
+    
+    def _as_style_str(self):
+        decorations = []
+        if self.line_through: decorations.append('line-through')
+        if self.underline: decorations.append('underline')
+        decorations_value_str = ' '.join(decorations)
+        style_str = decorations_value_str
+        result = f' style="text-decoration:{style_str}"' if style_str else ''
+        return result
 
 class ODTConverter:
     """Converts ODT files to HTML with embedded resources."""
@@ -513,14 +557,25 @@ class ODTConverter:
         return result
 
     
-    def _get_style_string(self, style_name: str) -> str:
+    def _get_style_string(self, style_name: str, predicate: Optional[Callable[[str],bool]] = None) -> str:
         """Get CSS style string for a named style."""
         if style_name not in self.styles:
             return ""
         
         props = self.styles[style_name]
-        return "; ".join(f"{k}: {v}" for k, v in props.items())
-    
+        return "; ".join(f"{k}: {v}" for k, v in props.items() if predicate is None or predicate(k))
+
+    def _get_text_decoration(self, style_name: str) -> TextDecoration:
+        """Get CSS style string for a named style."""
+        props = self.styles[style_name]
+        text_decoration_str: str = props.get('text-decoration', '')
+        text_decoration_substrs = text_decoration_str.split()
+        text_decoration = TextDecoration(
+            underline='underline' in text_decoration_substrs,
+            line_through='line-through' in text_decoration_substrs,
+        )
+        return text_decoration
+
     def _convert_content(self, content_xml: str) -> str:
         """Convert ODT content XML to HTML body content."""
         root = ET.fromstring(content_xml)
@@ -651,32 +706,35 @@ class ODTConverter:
     def _process_paragraph(self, para: ET.Element) -> str:
         """Process a paragraph element."""
         style_name = para.get(f"{{{NAMESPACES['text']}}}style-name", "")
-        style_str = self._get_style_string(style_name)
+        text_decoration = self._get_text_decoration(style_name)
+        style_str = self._get_style_string(style_name, lambda key : key != 'text-decoration')
         
         # Split content into inline text, paragraph anchors, and page anchors
-        inline_content, anchored_content_list, page_anchors_list = self._process_paragraph_content_split(para)
+        inline_content, anchored_content_list, page_anchors_list = self._process_paragraph_content_split(para, text_decoration)
         
         # Hoist page anchors to global state
         if page_anchors_list:
             self.current_page_anchors.extend(page_anchors_list)
         
+        inline_content = text_decoration.wrap(inline_content)
         if not inline_content.strip() and not anchored_content_list:
             inline_content = "&nbsp;"  # Preserve empty paragraphs
         elif not inline_content.strip():
-             # Ensure paragraph has height if it contains anchors but no text
-             inline_content = "&nbsp;"
+            # Ensure paragraph has height if it contains anchors but no text
+            inline_content = "&nbsp;"
         
         style_attr = f' style="{style_str}"' if style_str else ''
         p_html = f'<p{style_attr}>{inline_content}</p>'
         
         # If we have paragraph-anchored objects, wrap them in a relative container
         if anchored_content_list:
-             anchored_html = "".join(anchored_content_list)
-             return f'<div class="paragraph-anchor" style="position: relative">{p_html}{anchored_html}</div>'
+            anchored_html = "".join(anchored_content_list)
+            anchored_html = text_decoration.wrap(anchored_html)
+            return f'<div class="paragraph-anchor" style="position: relative">{p_html}{anchored_html}</div>'
         else:
-             return p_html
+            return p_html
 
-    def _process_paragraph_content_split(self, element: ET.Element) -> tuple[str, list[str], list[str]]:
+    def _process_paragraph_content_split(self, element: ET.Element, text_decoration: TextDecoration) -> tuple[str, list[str], list[str]]:
         """Process paragraph content, separating inline content, paragraph anchors, and page anchors."""
         inline_parts = []
         anchored_parts = []
@@ -695,8 +753,9 @@ class ODTConverter:
             is_para_anchored = (anchor_type == 'paragraph')
             is_page_anchored = (anchor_type == 'page')
             
-            child_html = self._process_child_to_html(child)
+            child_html = self._process_child_to_html(child, text_decoration)
             
+            # FIXME following ignores the orignal elements order in content.xml
             if is_page_anchored:
                 page_anchors.append(child_html)
             elif is_para_anchored:
@@ -716,14 +775,16 @@ class ODTConverter:
         level = min(int(level), 6)  # HTML only supports h1-h6
         
         style_name = heading.get(f"{{{NAMESPACES['text']}}}style-name", "")
-        style_str = self._get_style_string(style_name)
+        style_str = self._get_style_string(style_name, lambda key: key != 'text-decoration')
+        text_decoration = self._get_text_decoration(style_name)
         
-        content = self._process_inline_content(heading)
+        content = self._process_inline_content(heading, text_decoration)
+        content = text_decoration.wrap(content)
         
         style_attr = f' style="{style_str}"' if style_str else ''
         return f'<h{level}{style_attr}>{content}</h{level}>'
-    
-    def _process_inline_content(self, element: ET.Element) -> str:
+
+    def _process_inline_content(self, element: ET.Element, text_decoration: TextDecoration=TextDecoration()) -> str:
         """Process inline content within a paragraph or heading."""
         parts = []
         
@@ -732,7 +793,7 @@ class ODTConverter:
             parts.append(escape(element.text))
         
         for child in element:
-            parts.append(self._process_child_to_html(child))
+            parts.append(self._process_child_to_html(child, text_decoration))
             
             # Add tail text
             if child.tail:
@@ -740,7 +801,7 @@ class ODTConverter:
         
         return "".join(parts)
     
-    def _process_child_to_html(self, child: ET.Element) -> str:
+    def _process_child_to_html(self, child: ET.Element, text_decoration: TextDecoration) -> str:
         """Process a single child element to HTML."""
         tag = child.tag.split('}')[-1]
         
@@ -781,51 +842,56 @@ class ODTConverter:
             element_style.append("display: inline-block")
             element_style.append("vertical-align: text-bottom")
         
+
         if tag == 'span':
-            return self._process_span(child)
+            result = self._process_span(child)
+            # NOTE just prevent text_decoration propagate to inner elements
+            result = text_decoration.nowrap(result)
         elif tag == 's':
             # Spaces
             count = int(child.get(f"{{{NAMESPACES['text']}}}c", "1"))
-            return '&nbsp;' * count
+            result = '&nbsp;' * count
         elif tag == 'tab':
-            return '&emsp;'
+            result = '&emsp;'
         elif tag == 'line-break':
-            return '<br>'
+            result = '<br>'
+            result = text_decoration.nowrap(result)
         elif tag == 'a':
-            return self._process_link(child)
+            result = self._process_link(child)
         elif tag == 'frame':
-            return self._process_frame(child)
+            result = self._process_frame(child)
         elif tag == 'bookmark' or tag == 'bookmark-start' or tag == 'bookmark-end':
             name = child.get(f"{{{NAMESPACES['text']}}}name", "")
             if name:
-                return f'<a id="{escape(name)}"></a>'
-            return ""
+                result = f'<a id="{escape(name)}"></a>'
+            result = ""
         elif tag == 'note':
-            return self._process_note(child)
+            result = self._process_note(child)
         elif tag == 'soft-page-break':
             if self.show_page_breaks:
-                return '<span class="inline-page-break"></span>'
-            return ""
+                result = '<span class="inline-page-break"></span>'
+            result = ""
         elif tag == 'sequence':
-            return self._process_sequence(child)
+            result = self._process_sequence(child)
         elif tag == 'note-ref':
             ref_name = child.get(f"{{{NAMESPACES['text']}}}ref-name", "")
             content = self._process_inline_content(child)
-            return f'<sup><a href="#ref-{ref_name}" class="footnote-ref">{content}</a></sup>'
+            result = f'<sup><a href="#ref-{ref_name}" class="footnote-ref">{content}</a></sup>'
         elif tag == 'custom-shape':
-            return self._process_custom_shape(child, child, element_style)
+            result = self._process_custom_shape(child, child, element_style)
         elif tag == 'rect':
-            return self._process_drawing_rect(child, child, element_style)
+            result = self._process_drawing_rect(child, child, element_style)
         elif tag == 'ellipse':
-            return self._process_drawing_ellipse(child, child, element_style)
+            result = self._process_drawing_ellipse(child, child, element_style)
         elif tag == 'line':
-            return self._process_drawing_line(child, element_style)
-        else:
+            result = self._process_drawing_line(child, element_style)
+        elif child.text:
             # Try to get any text content
-            if child.text:
-                return escape(child.text)
-            return ""
-        
+            result = escape(child.text)
+        else:
+            result = ""
+        # result = text_decoration.nowrap(result) if result else ""
+        return result
 
     
     def _process_sequence(self, seq: ET.Element) -> str:
@@ -837,10 +903,10 @@ class ODTConverter:
     def _process_span(self, span: ET.Element) -> str:
         """Process a text span element."""
         style_name = span.get(f"{{{NAMESPACES['text']}}}style-name", "")
-        style_str = self._get_style_string(style_name)
-        
-        content = self._process_inline_content(span)
-        
+        style_str = self._get_style_string(style_name, lambda key: key != 'text-decoration')
+        text_decoration = self._get_text_decoration(style_name)
+        content = self._process_inline_content(span, text_decoration)
+        content = text_decoration.wrap(content)
         if style_str:
             return f'<span style="{style_str}">{content}</span>'
         return content
@@ -990,7 +1056,7 @@ class ODTConverter:
             # and just let the text flow through, so setting opacity and/or z-index
             # to enable user to be able to view both.
             if is_position_absolute:
-                style_parts.append("opacity: 0.9")
+                # style_parts.append("opacity: 0.9")
                 style_parts.append("z-index: -10")
             # Wrap in the main frame div
             style_str = "; ".join(style_parts)
@@ -1759,6 +1825,7 @@ class ODTConverter:
     <title>Converted Document</title>
     <style>
         body {{
+            position: relative;
             z-index: -90;
             font-family: 'Noto Serif', 'Times New Roman', serif;
             line-height: 1.6;
@@ -1768,6 +1835,7 @@ class ODTConverter:
             background-color: #f0f0f0;
         }}
         .anchor-page {{
+            position: relative;
             z-index: -80;
             background-color: #fff;
             margin: 0 auto 30px auto;
