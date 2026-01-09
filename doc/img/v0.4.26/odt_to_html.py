@@ -100,13 +100,13 @@ class TextDecoration(BaseModel):
         else:
             return content
 
-    # def as_wrapped_str(self, format:str = ' style={}') -> str:
-    #     decorations = []
-    #     if self.line_through: decorations.append('line-through')
-    #     if self.underline: decorations.append('underline')
-    #     decorations_value_str = ' '.join(decorations)
-    #     style_str = decorations_value_str
-    #     return format.format(style_str)
+    def as_wrapped_str(self, format:str = ' style={}') -> str:
+        decorations = []
+        if self.line_through: decorations.append('line-through')
+        if self.underline: decorations.append('underline')
+        decorations_value_str = ' '.join(decorations)
+        style_str = decorations_value_str
+        return format.format(style_str)
     
     def _as_style_str(self):
         decorations = []
@@ -116,11 +116,6 @@ class TextDecoration(BaseModel):
         style_str = decorations_value_str
         result = f' style="text-decoration:{style_str}"' if style_str else ''
         return result
-    
-    def inherit(self, base: 'TextDecoration') -> 'TextDecoration':
-        if self.line_through is None: self.line_through = base.line_through
-        if self.underline is None: self.underline = base.underline
-        return self
 
 class ODTConverter:
     """Converts ODT files to HTML with embedded resources."""
@@ -129,7 +124,6 @@ class ODTConverter:
         self.odt_path = Path(odt_path)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
-        self.text_decorations: dict[str, TextDecoration] = {} # key is style_name
         self.list_styles: dict[str, dict] = {}
         self.font_declarations: dict[str, dict] = {}
         self.footnotes: list[dict] = []  # Collect footnotes for end of document
@@ -202,7 +196,6 @@ class ODTConverter:
                 continue
             
             style_props = {}
-            text_decoration = TextDecoration()
             
             # Get parent style properties first
             parent_style = style.get(f"{{{NAMESPACES['style']}}}parent-style-name")
@@ -212,7 +205,7 @@ class ODTConverter:
             # Get text properties
             text_props = style.find(f"{{{NAMESPACES['style']}}}text-properties")
             if text_props is not None:
-                self._extract_text_properties(text_props, style_props, text_decoration)
+                self._extract_text_properties(text_props, style_props)
             
             # Get paragraph properties
             para_props = style.find(f"{{{NAMESPACES['style']}}}paragraph-properties")
@@ -235,8 +228,7 @@ class ODTConverter:
                 self._extract_graphic_properties(graphic_props, style_props)
             
             self.styles[style_name] = style_props
-            self.text_decorations[style_name] = text_decoration
-
+        
         # Parse Page Layouts
         # 1. Find master page to identify the default page layout
         default_page_layout_name = None
@@ -287,7 +279,7 @@ class ODTConverter:
                  key = attr.replace('page-', '') # page-width -> width
                  self.page_properties[key] = val
     
-    def _extract_text_properties(self, props: ET.Element, style_dict: dict, text_decoration: TextDecoration) -> None:
+    def _extract_text_properties(self, props: ET.Element, style_dict: dict) -> None:
         """Extract text formatting properties."""
         # Font weight (bold)
         font_weight = props.get(f"{{{NAMESPACES['fo']}}}font-weight")
@@ -299,33 +291,36 @@ class ODTConverter:
         if font_style == 'italic':
             style_dict['font-style'] = 'italic'
         
-        # Text decoration (underline)
-        # for viewing the doc about style:text-underline-style, see https://docs.oasis-open.org/office/OpenDocument/v1.3/os/part3-schema/OpenDocument-v1.3-os-part3-schema.html#__RefHeading__1420224_253892949
-        # According to spec, the presense of style:text-underline-style with a non "none" value, 
-        # implies the attrib style:text-underline-type should be defined and properly setted
-        # so checking style:text-underline-style is enough
+        # Text decoration (underline, strikethrough)
         text_underline = props.get(f"{{{NAMESPACES['style']}}}text-underline-style")
         if text_underline and text_underline != 'none':
             style_dict['text-decoration'] = 'underline'
-        if text_underline is None:
-            text_decoration.underline = None
-        elif text_underline == 'none':
-            text_decoration.underline = False
-        else:
-            text_decoration.underline = True
         
-        # Text decoration (Strikethrough)
-        # For viewing the doc about style:text-line-through-type, see https://docs.oasis-open.org/office/OpenDocument/v1.3/os/part3-schema/OpenDocument-v1.3-os-part3-schema.html#__RefHeading__1420190_253892949
-        # According to spec, the presense of style:text-line-through-style with a non "none" value, 
-        # implies the attrib style:text-line-through-type should be defined and properly setted
-        # so checking style:text-line-through-style is enough
         text_line_through = props.get(f"{{{NAMESPACES['style']}}}text-line-through-style")
-        if text_line_through is None:
-            text_decoration.line_through = None
-        elif text_line_through == 'none':
-            text_decoration.line_through = False
-        else:
-            text_decoration.line_through = True
+        text_line_through_type = props.get(f"{{{NAMESPACES['style']}}}text-line-through-type")
+        if (text_line_through and text_line_through != 'none') or (text_line_through_type and text_line_through_type != 'none'):
+            existing = style_dict.get('text-decoration', '')
+            if 'line-through' not in existing:
+                style_dict['text-decoration'] = f"{existing} line-through".strip()
+        
+        # Border (Table cells)
+        if self.respect_table_borders:
+            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+                if border_val and border_val != 'none':
+                    # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
+                    # We might want to ensure a minimum width for visibility if it's very thin
+                    parts = border_val.split()
+                    if len(parts) >= 3 and parts[0].endswith('pt'):
+                        try:
+                            width = float(parts[0][:-2])
+                            if width < 0.5:
+                                # Ensure minimum visibility
+                                parts[0] = "0.5pt"
+                                border_val = " ".join(parts)
+                        except ValueError:
+                            pass
+                    style_dict[border_prop] = border_val
         
         # Border (Table cells)
         if self.respect_table_borders:
@@ -572,7 +567,13 @@ class ODTConverter:
 
     def _get_text_decoration(self, style_name: str) -> TextDecoration:
         """Get CSS style string for a named style."""
-        text_decoration = self.text_decorations[style_name]
+        props = self.styles[style_name]
+        text_decoration_str: str = props.get('text-decoration', '')
+        text_decoration_substrs = text_decoration_str.split()
+        text_decoration = TextDecoration(
+            underline='underline' in text_decoration_substrs,
+            line_through='line-through' in text_decoration_substrs,
+        )
         return text_decoration
 
     def _convert_content(self, content_xml: str) -> str:
@@ -706,7 +707,7 @@ class ODTConverter:
         """Process a paragraph element."""
         style_name = para.get(f"{{{NAMESPACES['text']}}}style-name", "")
         text_decoration = self._get_text_decoration(style_name)
-        style_str = self._get_style_string(style_name)
+        style_str = self._get_style_string(style_name, lambda key : key != 'text-decoration')
         
         # Split content into inline text, paragraph anchors, and page anchors
         inline_content, anchored_content_list, page_anchors_list = self._process_paragraph_content_split(para, text_decoration)
@@ -774,7 +775,7 @@ class ODTConverter:
         level = min(int(level), 6)  # HTML only supports h1-h6
         
         style_name = heading.get(f"{{{NAMESPACES['text']}}}style-name", "")
-        style_str = self._get_style_string(style_name)
+        style_str = self._get_style_string(style_name, lambda key: key != 'text-decoration')
         text_decoration = self._get_text_decoration(style_name)
         
         content = self._process_inline_content(heading, text_decoration)
@@ -841,10 +842,9 @@ class ODTConverter:
             element_style.append("display: inline-block")
             element_style.append("vertical-align: text-bottom")
         
-        # NOTE: currently only span and line-break enable nowrap for line-decoration.
-        # NOTE: may come back for other in the future ?
+
         if tag == 'span':
-            result = self._process_span(child, text_decoration)
+            result = self._process_span(child)
             # NOTE just prevent text_decoration propagate to inner elements
             result = text_decoration.nowrap(result)
         elif tag == 's':
@@ -900,12 +900,11 @@ class ODTConverter:
         seq_text = seq.text or ""
         return escape(seq_text)
     
-    def _process_span(self, span: ET.Element, base_text_decoration: TextDecoration) -> str:
+    def _process_span(self, span: ET.Element) -> str:
         """Process a text span element."""
         style_name = span.get(f"{{{NAMESPACES['text']}}}style-name", "")
-        style_str = self._get_style_string(style_name)
+        style_str = self._get_style_string(style_name, lambda key: key != 'text-decoration')
         text_decoration = self._get_text_decoration(style_name)
-        text_decoration.inherit(base_text_decoration)
         content = self._process_inline_content(span, text_decoration)
         content = text_decoration.wrap(content)
         if style_str:

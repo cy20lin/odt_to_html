@@ -68,3 +68,5 @@
       - style:text-line-through-style="none"
       - style:text-line-through-type="none" 
     - *unspecified* -> inherit from parent
+- v0.4.27:
+  - fix: Respect line-decoration for parent element in span:text
