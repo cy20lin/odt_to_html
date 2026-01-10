@@ -722,23 +722,23 @@ class ODTConverter:
             # Ensure paragraph has height if it contains anchors but no text
             inline_content = "&nbsp;"
         
-        style_attr = f' style="{style_str}"' if style_str else ''
-        p_html = f'<p{style_attr}>{inline_content}</p>'
-        
-        # If we have paragraph-anchored objects, wrap them in a relative container
         if anchored_content_list:
             anchored_html = "".join(anchored_content_list)
-            anchored_html = text_decoration.wrap(anchored_html)
-            return f'<div class="paragraph-anchor" style="position: relative">{p_html}{anchored_html}</div>'
+            style_attr = f' style="position:relative;{style_str}"' if style_str else ''
+            result = f'<p class="anchor-paragraph"{style_attr}>{anchored_html}{inline_content}</p>'
         else:
-            return p_html
+            style_attr = f' style="{style_str}"' if style_str else ''
+            result = f'<p {style_attr}>{inline_content}</p>'
+        # TODO: use <span calss="p"> instead of <p> in inline context
+        return result
 
     def _process_paragraph_content_split(self, element: ET.Element, text_decoration: TextDecoration) -> tuple[str, list[str], list[str]]:
         """Process paragraph content, separating inline content, paragraph anchors, and page anchors."""
+        # NOTE: Maybe respect element order
         inline_parts = []
         anchored_parts = []
         page_anchors = []
-        
+
         # Add element's direct text
         if element.text:
             inline_parts.append(escape(element.text))
@@ -938,6 +938,10 @@ class ODTConverter:
         if height:
             style_parts.append(f"height: {height}")
         
+        z_index = frame.get(f"{{{NAMESPACES['draw']}}}z-index", None)
+        if z_index is not None:
+            style_parts.append(f'z-index: {z_index}')
+
         # Get style name and properties
         style_name = frame.get(f"{{{NAMESPACES['draw']}}}style-name", "")
         if style_name in self.styles:
@@ -1008,7 +1012,8 @@ class ODTConverter:
                 # Text box needs to be a positioning context for shapes inside
                 # Get min-height from the text-box element
                 tb_min_height = child.get(f"{{{NAMESPACES['fo']}}}min-height", "")
-                tb_style = ["position: relative"]  # Always relative for positioned children
+                # tb_style = ["position: relative"]  # Always relative for positioned children
+                tb_style = []
                 if tb_min_height:
                     tb_style.append(f"min-height: {tb_min_height}")
                 tb_style.extend(child_style)
@@ -1018,18 +1023,23 @@ class ODTConverter:
                 # frame_content_parts.append(f'<div class="text-box-container" style="{s}">{content}</div>')
                 frame_content_parts.append(f'<span class="div text-box-container" style="{s}">{content}</span>')
             elif tag == 'custom-shape':
-                frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style))
+                # frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style))
+                frame_content_parts.append(self._process_custom_shape(frame, child, child_style))
             elif tag == 'rect':
-                frame_content_parts.append(self._process_drawing_rect(frame, child, style_parts.copy() + child_style))
+                # frame_content_parts.append(self._process_drawing_rect(frame, child, style_parts.copy() + child_style))
+                frame_content_parts.append(self._process_drawing_rect(frame, child, child_style))
             elif tag == 'ellipse':
-                frame_content_parts.append(self._process_drawing_ellipse(frame, child, style_parts.copy() + child_style))
+                # frame_content_parts.append(self._process_drawing_ellipse(frame, child, style_parts.copy() + child_style))
+                frame_content_parts.append(self._process_drawing_ellipse(frame, child, child_style))
             elif tag == 'line':
-                frame_content_parts.append(self._process_drawing_line(child, style_parts.copy() + child_style))
+                # frame_content_parts.append(self._process_drawing_line(child, style_parts.copy() + child_style))
+                frame_content_parts.append(self._process_drawing_line(child, child_style))
             elif tag == 'object':
                 # OLE object - try to find replacement image
                 replacement_img = frame.find(f".//{{{NAMESPACES['draw']}}}image")
                 if replacement_img is not None:
-                    frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name))
+                    # frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name))
+                    frame_content_parts.append(self._process_image(replacement_img, child_style, frame_name))
                     # frame_content_parts.append(self._process_image(replacement_img, child_style, frame_name))
         
         # If we have positioned children, the container must be relative
@@ -1058,7 +1068,8 @@ class ODTConverter:
             # to enable user to be able to view both.
             if is_position_absolute:
                 # style_parts.append("opacity: 0.9")
-                style_parts.append("z-index: -10")
+                # style_parts.append("z-index: -10")
+                pass
             # Wrap in the main frame div
             style_str = "; ".join(style_parts)
             content = '\n'.join(part for part in frame_content_parts if part)
@@ -1087,7 +1098,8 @@ class ODTConverter:
                     # the height is defaulted to auto, to match the height of the contained frame
                     svgy_align_elements_str = f'<span class="svgy-negative-aligner-padder"></span>'
                 return (
-                    f'<span style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;line-height=0;{position_style_str}">' 
+                    # f'<span style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;line-height:1.2;{position_style_str}">' 
+                    f'<span class="anchor-char" style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;{position_style_str}">' 
                     f'{svgy_align_elements_str}' 
                     f'<span class="div draw-frame" style="grid-column:2;grid-row:3;{style_str}">{content}</span>'
                     f'</span>'
@@ -1123,6 +1135,7 @@ class ODTConverter:
                     # NOTE: use span class=p instead of p for as-char shape/object
                     # parts.append(f'<p class="caption"{style_attr}>{content}</p>')
                     parts.append(f'<span class="p caption"{style_attr}>{content}</span>')
+                    print(f'<span class="p caption"{style_attr}></span>', style_name, repr(style_str))
             elif tag == 'list':
                 parts.append(self._process_list(child))
         return '\n'.join(parts)
@@ -1247,6 +1260,10 @@ class ODTConverter:
             style_str += "; position: relative"
         if "display" not in style_str:
             style_str += "; display: inline-block"
+
+        z_index = frame.get(f"{{{NAMESPACES['draw']}}}z-index", None)
+        if z_index is not None:
+            style_str += "; z-index: {z_index}"
             
         content = svg
         if text_html.strip():
@@ -1256,8 +1273,8 @@ class ODTConverter:
             content += f'<span class="div" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden;">{text_html}</span>'
 
         # NOTE
-        # return f'<div class="drawing-custom-shape" style="{style_str}">{content}</div>'
-        return f'<span class="div drawing-custom-shape" style="{style_str}">{content}</span>'
+        # return f'<div class="draw-custom-shape" style="{style_str}">{content}</div>'
+        return f'<span class="div draw-custom-shape" style="{style_str}">{content}</span>'
 
     def _solve_equations(self, geometry: ET.Element, frame: ET.Element) -> dict:
         """Solve ODT enhanced geometry equations."""
@@ -1658,7 +1675,9 @@ class ODTConverter:
                         rows_html.append(self._process_table_row(row, is_header=True))
         
         style_attr = f' style="{style_str}"' if style_str else ''
-        return f'<table{style_attr} border="1" cellspacing="0" cellpadding="4">{"".join(rows_html)}</table>'
+        # return f'<table{style_attr} border="1" cellspacing="0" cellpadding="4">{"".join(rows_html)}</table>'
+        rows_html_str = "".join(rows_html)
+        return f'<table{style_attr}>{rows_html_str}</table>'
     
     def _process_table_row(self, row: ET.Element, is_header: bool = False) -> str:
         """Process a table row element."""
@@ -1881,7 +1900,7 @@ class ODTConverter:
         /* p class for mimic p tag via span tag */
         .p {{
             display: block;
-            margin: 0.5em 0;
+            margin: 0 0;
         }}
         .div {{
             display: block; 
@@ -1921,7 +1940,8 @@ class ODTConverter:
             margin: 0 auto;
         }}
         figcaption {{
-            margin-top: 0.5em;
+            /*margin-top: 0.5em;*/
+            margin-top: 0em;
             font-style: italic;
             color: #666;
             font-size: 0.9em;
