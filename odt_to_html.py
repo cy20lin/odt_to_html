@@ -125,7 +125,7 @@ class TextDecoration(BaseModel):
 class ODTConverter:
     """Converts ODT files to HTML with embedded resources."""
     
-    def __init__(self, odt_path: str, show_page_breaks: bool = True, respect_table_borders: bool = True):
+    def __init__(self, odt_path: str, show_page_breaks: bool = True):
         self.odt_path = Path(odt_path)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
@@ -134,8 +134,8 @@ class ODTConverter:
         self.font_declarations: dict[str, dict] = {}
         self.footnotes: list[dict] = []  # Collect footnotes for end of document
         self.show_page_breaks = show_page_breaks
-        self.respect_table_borders = respect_table_borders
         self.current_page_anchors: list[str] = []
+        self.list_style_name_stack: list[str] = []
         self.page_properties: dict[str, str] = {
             'width': '21cm',
             'height': '29.7cm',
@@ -328,23 +328,25 @@ class ODTConverter:
             text_decoration.line_through = True
         
         # Border (Table cells)
-        if self.respect_table_borders:
-            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
-                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
-                if border_val and border_val != 'none':
-                    # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
-                    # We might want to ensure a minimum width for visibility if it's very thin
-                    parts = border_val.split()
-                    if len(parts) >= 3 and parts[0].endswith('pt'):
-                        try:
-                            width = float(parts[0][:-2])
-                            if width < 0.5:
-                                # Ensure minimum visibility
-                                parts[0] = "0.5pt"
-                                border_val = " ".join(parts)
-                        except ValueError:
-                            pass
-                    style_dict[border_prop] = border_val
+        for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+            border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+            if border_val is not None:
+                style_dict[border_prop] = border_val
+            # NOTE: unomment following code if you want to have a minimun border
+            # if border_val and border_val != 'none':
+            #     # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
+            #     # We might want to ensure a minimum width for visibility if it's very thin
+            #     parts = border_val.split()
+            #     if len(parts) >= 3 and parts[0].endswith('pt'):
+            #         try:
+            #             width = float(parts[0][:-2])
+            #             if width < 0.5:
+            #                 # Ensure minimum visibility
+            #                 parts[0] = "0.5pt"
+            #                 border_val = " ".join(parts)
+            #         except ValueError:
+            #             pass
+            #     style_dict[border_prop] = border_val
         
         # Font size
         font_size = props.get(f"{{{NAMESPACES['fo']}}}font-size")
@@ -445,23 +447,24 @@ class ODTConverter:
         if padding:
             style_dict['padding'] = padding
         
-        if self.respect_table_borders:
-            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
-                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
-                if border_val and border_val != 'none':
-                    # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
-                    # We might want to ensure a minimum width for visibility if it's very thin
-                    parts = border_val.split()
-                    if len(parts) >= 3 and parts[0].endswith('pt'):
-                        try:
-                            width = float(parts[0][:-2])
-                            if width < 0.5:
-                                # Ensure minimum visibility
-                                parts[0] = "0.5pt"
-                                border_val = " ".join(parts)
-                        except ValueError:
-                            pass
-                    style_dict[border_prop] = border_val
+        for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+            border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+            if border_val is not None:
+                style_dict[border_prop] = border_val
+            # if border_val and border_val != 'none':
+            #     # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
+            #     # We might want to ensure a minimum width for visibility if it's very thin
+            #     parts = border_val.split()
+            #     if len(parts) >= 3 and parts[0].endswith('pt'):
+            #         try:
+            #             width = float(parts[0][:-2])
+            #             if width < 0.5:
+            #                 # Ensure minimum visibility
+            #                 parts[0] = "0.5pt"
+            #                 border_val = " ".join(parts)
+            #         except ValueError:
+            #             pass
+            #     style_dict[border_prop] = border_val
         
         bg_color = props.get(f"{{{NAMESPACES['fo']}}}background-color")
         if bg_color and bg_color != 'transparent':
@@ -514,21 +517,22 @@ class ODTConverter:
         elif stroke_style == 'solid':
             style_dict['border-style'] = 'solid'
 
-        # Also check for fo:border properties which might be used in graphic styles
-        if self.respect_table_borders:
-            for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
-                border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
-                if border_val and border_val != 'none':
-                    parts = border_val.split()
-                    if len(parts) >= 3 and parts[0].endswith('pt'):
-                        try:
-                            width = float(parts[0][:-2])
-                            if width < 0.5:
-                                parts[0] = "0.5pt"
-                                border_val = " ".join(parts)
-                        except ValueError:
-                            pass
-                    style_dict[border_prop] = border_val
+        # # Also check for fo:border properties which might be used in graphic styles
+        for border_prop in ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']:
+            border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
+            if border_val is not None:
+                style_dict[border_prop] = border_val
+            # if border_val and border_val != 'none':
+            #     parts = border_val.split()
+            #     if len(parts) >= 3 and parts[0].endswith('pt'):
+            #         try:
+            #             width = float(parts[0][:-2])
+            #             if width < 0.5:
+            #                 parts[0] = "0.5pt"
+            #                 border_val = " ".join(parts)
+            #         except ValueError:
+            #             pass
+            #     style_dict[border_prop] = border_val
 
         # Padding/Margin
         padding = props.get(f"{{{NAMESPACES['fo']}}}padding")
@@ -1018,9 +1022,9 @@ class ODTConverter:
                 tb_min_height = child.get(f"{{{NAMESPACES['fo']}}}min-height", "")
                 # tb_style = ["position: relative"]  # Always relative for positioned children
                 tb_style = []
+                tb_style.extend(child_style)
                 if tb_min_height:
                     tb_style.append(f"min-height: {tb_min_height}")
-                tb_style.extend(child_style)
                 
                 content = self._process_text_box_content(child)
                 s = "; ".join(tb_style)
@@ -1121,7 +1125,9 @@ class ODTConverter:
             else:
                 # NOTE: Use tag div instead of span because nesting div in span is invalid html and cause undefined behavior
                 # NOTE: Use tag div to ensure it has block display to contain size
+                # NOTE: display is set by div as block by default for draw-frame
                 return f'<span class="div draw-frame" style="{style_str};{position_style_str}">{content}</span>'
+
         
         # Fallback: check for ObjectReplacements
         for name in self.resources:
@@ -1638,6 +1644,11 @@ class ODTConverter:
         """Process a list element."""
         style_name = list_elem.get(f"{{{NAMESPACES['text']}}}style-name", "")
         
+        # use the applied style as default
+        if style_name == '' and self.list_style_name_stack:
+            style_name = self.list_style_name_stack[-1]
+        self.list_style_name_stack.append(style_name)
+        
         # Determine list type (ordered or unordered)
         list_type = 'ul'
         if style_name in self.list_styles:
@@ -1651,7 +1662,10 @@ class ODTConverter:
             if tag == 'list-item':
                 items_html.append(self._process_list_item(item, style_name, level))
         
-        return f'<{list_type}>{"".join(items_html)}</{list_type}>'
+        result = f'<{list_type}>{"".join(items_html)}</{list_type}>'
+
+        self.list_style_name_stack.pop()
+        return result
     
     def _process_list_item(self, item: ET.Element, list_style: str, level: int) -> str:
         """Process a list item element."""
@@ -1908,11 +1922,6 @@ class ODTConverter:
             line-height:0;
         }}
         .draw-frame {{
-            /* display is set by div by default for draw-frame */
-            /* either of following will work, maybe behave slightly different */
-            /* display: inline-grid;*/ 
-            /* display: block;*/ 
-            /* display: inline-block; */
         }}
         /* p class for mimic p tag via span tag */
         .p {{
@@ -1923,10 +1932,9 @@ class ODTConverter:
             display: block; 
         }}
         p {{
-            margin: 0.5em 0;
-            /* position: relative; removed to allow page anchors to work if trapped? 
-               Actually, relying on .paragraph-anchor wrapper for paragraph-anchored objects. 
-               Removing this global relative might help debug if things drift. */
+            /* hardcoded value */
+            /* margin: 5em 0; */ /*for webpage use */
+            margin: 0 0; /* for document use */
         }}
         h1, h2, h3, h4, h5, h6 {{
             margin-top: 1em;
@@ -1935,10 +1943,10 @@ class ODTConverter:
         }}
         table {{
             border-collapse: collapse;
-            margin: 1em 0;
+            /* margin: 1em 0; */
         }}
         th, td {{
-            padding: 8px;
+            /* padding: 8px; */
             text-align: left;
         }}
         th {{
@@ -1967,11 +1975,11 @@ class ODTConverter:
             color: #0066cc;
         }}
         ul, ol {{
-            margin: 0.5em 0;
-            padding-left: 2em;
+            /* margin: 0.5em 0; */
+            /* padding-left: 2em; */
         }}
         li {{
-            margin: 0.25em 0;
+            /* margin: 0.25em 0; */
         }}
         .footnote-ref a {{
             text-decoration: none;
@@ -2032,10 +2040,6 @@ Examples:
     parser.add_argument('output', help='Path for the output HTML file')
     parser.add_argument('--no-page-breaks', action='store_true', default=True,
                         help='Hide page break separators in output HTML')
-    parser.add_argument('--table-respect-border', action='store_true', default=True,
-                        help='Respect table border styles from ODT (default: True). Use --no-table-respect-border to disable.')
-    parser.add_argument('--no-table-respect-border', action='store_false', dest='table_respect_border',
-                        help='Disable respecting table border styles')
     
     args = parser.parse_args()
     
@@ -2056,7 +2060,6 @@ Examples:
         converter = ODTConverter(
             str(input_path), 
             show_page_breaks=show_page_breaks,
-            respect_table_borders=args.table_respect_border
         )
         html_content = converter.convert()
         
