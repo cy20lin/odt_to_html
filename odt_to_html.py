@@ -955,7 +955,11 @@ class ODTConverter:
             
             # Ensure box-sizing if borders are added
             if 'border' in frame_style_props or 'border-width' in frame_style_props:
-                style_parts.append("box-sizing: border-box")
+                # NOTE: let user decide if they need pretty border wrap ?
+                disable_draw_frame_border_box = True # better border line visually
+                # disable_draw_frame_border_box = False
+                if not disable_draw_frame_border_box:
+                    style_parts.append("box-sizing: border-box")
         
         # Check for absolute positioning
         x = frame.get(f"{{{NAMESPACES['svg']}}}x")
@@ -1021,7 +1025,16 @@ class ODTConverter:
                 content = self._process_text_box_content(child)
                 s = "; ".join(tb_style)
                 # frame_content_parts.append(f'<div class="text-box-container" style="{s}">{content}</div>')
-                frame_content_parts.append(f'<span class="div text-box-container" style="{s}">{content}</span>')
+                # NOTE: Setting font-size to be zero, to supress unwanted actual line-height 
+                # as line-height usually setted as ratio to current font-size, 
+                # don't set line-height to zero so that the inner text cloud inherit the line-height ratio with thier custom font sizes
+                # NOTE: width is set to be wider for fitting the text overflow issue in web view but not in office, possible cause by different font
+                compensation_style_str= (
+                    "font-size:0;"
+                    # "line-height:1.5;"
+                    "width:110%;"
+                )
+                frame_content_parts.append(f'<span class="div text-box-container" style="{compensation_style_str}{s}">{content}</span>')
             elif tag == 'custom-shape':
                 # frame_content_parts.append(self._process_custom_shape(frame, child, style_parts.copy() + child_style))
                 frame_content_parts.append(self._process_custom_shape(frame, child, child_style))
@@ -1040,7 +1053,6 @@ class ODTConverter:
                 if replacement_img is not None:
                     # frame_content_parts.append(self._process_image(replacement_img, style_parts.copy() + child_style, frame_name))
                     frame_content_parts.append(self._process_image(replacement_img, child_style, frame_name))
-                    # frame_content_parts.append(self._process_image(replacement_img, child_style, frame_name))
         
         # If we have positioned children, the container must be relative
         # if as-char  should relative to anchor ?
@@ -1099,7 +1111,9 @@ class ODTConverter:
                     svgy_align_elements_str = f'<span class="svgy-negative-aligner-padder"></span>'
                 return (
                     # f'<span style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;line-height:1.2;{position_style_str}">' 
+                    # f'<span class="anchor-char" style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;line-height:0;{position_style_str}">' 
                     f'<span class="anchor-char" style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;{position_style_str}">' 
+                    # f'<span class="anchor-as-char" style="display:inline-grid;grid-template-columns:0 auto;grid-template-rows:{x_value} auto auto;{position_style_str}">' 
                     f'{svgy_align_elements_str}' 
                     f'<span class="div draw-frame" style="grid-column:2;grid-row:3;{style_str}">{content}</span>'
                     f'</span>'
@@ -1130,12 +1144,12 @@ class ODTConverter:
                 if content.strip():
                     # Check if this looks like a figure caption
                     style_name = child.get(f"{{{NAMESPACES['text']}}}style-name", "")
-                    style_str = self._get_style_string(style_name)
+                    # NOTE: HACK, Libreoffice seems doesn't respect margin-bottom, let's ignore it
+                    style_str = self._get_style_string(style_name, lambda key: key not in {'margin-bottom'})
                     style_attr = f' style="{style_str}"' if style_str else ''
                     # NOTE: use span class=p instead of p for as-char shape/object
                     # parts.append(f'<p class="caption"{style_attr}>{content}</p>')
                     parts.append(f'<span class="p caption"{style_attr}>{content}</span>')
-                    print(f'<span class="p caption"{style_attr}></span>', style_name, repr(style_str))
             elif tag == 'list':
                 parts.append(self._process_list(child))
         return '\n'.join(parts)
@@ -1263,7 +1277,7 @@ class ODTConverter:
 
         z_index = frame.get(f"{{{NAMESPACES['draw']}}}z-index", None)
         if z_index is not None:
-            style_str += "; z-index: {z_index}"
+            style_str += f"; z-index: {z_index}"
             
         content = svg
         if text_html.strip():
@@ -1877,18 +1891,21 @@ class ODTConverter:
             grid-column: 1;
             grid-row: 1;
             background-color: aqua;
+            line-height:0;
         }}
         .svgy-positive-padder {{
             display: inline-block;
             grid-column: 1;
             grid-row: 2;
             background-color: chocolate;
+            line-height:0;
         }}
         .svgy-negative-aligner-padder {{
             display: inline-block;
             grid-column: 1;
             grid-row: 3;
             background-color: cornflowerblue;
+            line-height:0;
         }}
         .draw-frame {{
             /* display is set by div by default for draw-frame */
