@@ -26,6 +26,121 @@ from xml.etree import ElementTree as ET
 import traceback
 from typing import Callable, Optional
 
+class Length:
+    # conversion factors to meter
+    _UNIT_TO_M = {
+        "mm": 0.001,
+        "cm": 0.01,
+        "m": 1.0,
+        "km": 1000.0,
+        "inch": 0.0254,
+        "in": 0.0254,
+        "ft": 0.3048,           # 12 * 0.0254
+        "mi": 1609.344,         # 5280 * 0.3048
+        "pt": 0.0254 / 72,      # 1 pt = 1/72 inch
+        "pc": 12 * (0.0254 / 72) # 1 pica = 12 pt
+    }
+
+    @staticmethod
+    def from_str(text) -> 'Length':
+        """
+        Extracts the first number (integer or float) and its unit from a string.
+        
+        Returns a tuple (number_as_float, unit_string) or (None, None) if no match.
+        """
+        # Regex pattern explanation:
+        # (?P<number>[-+]*\\d*\\.?\\d+) : Captures the number part (float or int) into a group named 'number'.
+        # \\s?                      : Matches an optional space.
+        # (?P<unit>[a-zA-Z]+)       : Captures the unit part (letters only) into a group named 'unit'.
+        pattern = re.compile(r'(?P<number>[-+]*\d*\.?\d+)\s*(?P<unit>[a-zA-Z]*)')
+        match = pattern.match(text.strip())
+        if match:
+            # Access the named groups
+            number_str = match.group('number')
+            unit_str = match.group('unit')
+            # Convert the number string to a float
+            return Length(float(number_str), unit_str)
+        else:
+            raise ValueError(f'Cannot parse {repr(text)} to Length.')
+
+    def __init__(self, value, unit="m"):
+        if unit not in self._UNIT_TO_M:
+            raise ValueError(f"Unsupported unit: {unit}")
+        self.value = float(value)
+        self.unit = unit
+        self._meters = self.value * self._UNIT_TO_M[unit]
+
+    # Representations
+    def __repr__(self):
+        return f"Length({self.value}, '{self.unit}')"
+
+    def __str__(self):
+        return f"{self.value} {self.unit}"
+
+    # Arithmetic operations
+    def __add__(self, other):
+        if not isinstance(other, Length):
+            return NotImplemented
+        return Length(self.value + other.to(self.unit), self.unit)
+
+    def __sub__(self, other):
+        if not isinstance(other, Length):
+            return NotImplemented
+        return Length(self.value - other.to(self.unit), self.unit)
+
+    def __mul__(self, factor):
+        if not isinstance(factor, (int, float)):
+            return NotImplemented
+        return Length(self.value * factor, self.unit)
+
+    def __rmul__(self, factor):
+        return self.__mul__(factor)
+
+    def __truediv__(self, factor):
+        if not isinstance(factor, (int, float)):
+            return NotImplemented
+        return Length(self.value / factor, self.unit)
+
+    # Negation
+    def __neg__(self):
+        return Length(-self.value , self.unit)
+
+    # Comparison
+    def __eq__(self, other):
+        if not isinstance(other, Length):
+            return NotImplemented
+        return self._meters == other._meters
+
+    def __lt__(self, other):
+        if isinstance(other, Length):
+            return self._meters < other._meters
+        elif isinstance(other,(int,float)):
+            return self.value < other
+        else:
+            return NotImplemented
+
+    def __le__(self, other):
+        return self == other or self < other
+
+    def __gt__(self, other):
+        return not self <= other
+
+    def __ge__(self, other):
+        return not self < other
+
+    # Hash (so it can be used in sets or as dict keys)
+    def __hash__(self):
+        return hash(self._meters)
+
+    # Convert to different unit
+    def to(self, unit):
+        if unit not in self._UNIT_TO_M:
+            raise ValueError(f"Unsupported unit: {unit}")
+        return self._meters / self._UNIT_TO_M[unit]
+    def __str__(self):
+        return f'{self.value:.6g}{self.unit}'
+
+
 # ODF XML namespaces
 NAMESPACES = {
     'office': 'urn:oasis:names:tc:opendocument:xmlns:office:1.0',
@@ -540,6 +655,44 @@ class ODTConverter:
         margin = props.get(f"{{{NAMESPACES['fo']}}}margin")
         if margin: style_dict['margin'] = margin
 
+        # Wrap properties
+        # wrap: https://docs.oasis-open.org/office/OpenDocument/v1.3/os/part3-schema/OpenDocument-v1.3-os-part3-schema.html#property-style_wrap
+        # run-through: https://docs.oasis-open.org/office/OpenDocument/v1.3/os/part3-schema/OpenDocument-v1.3-os-part3-schema.html#__RefHeading__1420150_253892949
+        # horizontal-pos: https://docs.oasis-open.org/office/OpenDocument/v1.3/os/part3-schema/OpenDocument-v1.3-os-part3-schema.html#__RefHeading__1420028_253892949
+        # wrap = biggest | dynamic | left | none | parallel | right | run-through
+        # run-through: background | foreground
+        
+        wrap = props.get(f"{{{NAMESPACES['style']}}}wrap")
+        if wrap: style_dict['wrap'] = wrap
+        
+        run_through = props.get(f"{{{NAMESPACES['style']}}}run-through")
+        if run_through: style_dict['run-through'] = run_through
+        
+        # NOTE:
+        # horizontal_pos = props.get(f"{{{NAMESPACES['style']}}}horizontal-pos")
+        # if horizontal_pos: style_dict['horizontal-pos'] = horizontal_pos
+
+        # NOTE: One may want to use the wrap relate props to determine
+        # to Determine wrapping/floating mode
+        # style_name = element.get(f"{{{NAMESPACES['draw']}}}style-name", "")
+        # is_floated = False
+        # if style_name in self.styles:
+        #     frame_style = self.styles[style_name]
+        #     wrap = frame_style.get('wrap', 'none')
+        #     run_through = frame_style.get('run-through', '')
+        #     h_pos = frame_style.get('horizontal-pos', '')
+        #     wrap_mode = None
+        #     if wrap in ('left', 'right'):
+        #         wrap_mode = wrap
+        #         is_floated = True
+        #     elif wrap in ('parallel', 'dynamic'):
+        #         if h_pos in ('left', 'from-left'):
+        #             style_parts.append("float: left")
+        #             is_floated = True
+        #         elif h_pos in ('right', 'from-right'):
+        #             style_parts.append("float: right")
+        #             is_floated = True
+
     def _parse_odt_transform(self, transform_str: str) -> dict:
         """Parse ODT draw:transform attribute.
         
@@ -705,7 +858,7 @@ class ODTConverter:
         for child in element:
             html_parts.append(self._process_single_element(child))
         return '\n'.join(p for p in html_parts if p)
-
+    
     def _process_paragraph(self, para: ET.Element) -> str:
         """Process a paragraph element."""
         style_name = para.get(f"{{{NAMESPACES['text']}}}style-name", "")
@@ -728,7 +881,7 @@ class ODTConverter:
         
         if anchored_content_list:
             anchored_html = "".join(anchored_content_list)
-            style_attr = f' style="position:relative;{style_str}"' if style_str else ''
+            style_attr = f' style="position:relative;{style_str}"'
             result = f'<p class="anchor-paragraph"{style_attr}>{anchored_html}{inline_content}</p>'
         else:
             style_attr = f' style="{style_str}"' if style_str else ''
@@ -736,11 +889,102 @@ class ODTConverter:
         # TODO: use <span calss="p"> instead of <p> in inline context
         return result
 
+    def _get_element_box(self, element: ET.Element) -> tuple[int,int,int,int]:
+        x = element.get(f"{{{NAMESPACES['svg']}}}x")
+        if x is None: return None
+        y = element.get(f"{{{NAMESPACES['svg']}}}y")
+        if y is None: return None
+        width = element.get(f"{{{NAMESPACES['svg']}}}width")
+        if width is None: return None
+        height = element.get(f"{{{NAMESPACES['svg']}}}height")
+        if height is None: return None
+        return (Length.from_str(x),Length.from_str(y),Length.from_str(width),Length.from_str(height))
+    
+    def _get_element_wrap_properties(self, element: ET.Element) -> tuple[str,str]:
+        # Get style name and properties
+        style_name = element.get(f"{{{NAMESPACES['draw']}}}style-name", "")
+        if style_name in self.styles:
+            frame_style = self.styles[style_name]
+            wrap = frame_style.get('wrap', 'none')
+            run_through = frame_style.get('run-through', 'background')
+            return wrap,run_through
+        else:
+            return 'none', 'background'
+
+    _WRAP_TO_WRAP_MODE_MAP = {
+        'left': 'left',
+        'right': 'right',
+        'biggest': 'left',
+        'dynamic': 'left',
+        'parallel': 'left',
+        'run-through': 'through',
+        'none': 'none',
+    }
+    @classmethod
+    def _map_wrap_properties_to_wrap_mode(cls, wrap, through):
+        default_wrap_mode = 'none'
+        return cls._WRAP_TO_WRAP_MODE_MAP.get(wrap, default_wrap_mode)
+    
+    _WRAP_MODE_TO_FLOAT_MODE_MAP = {
+        'left': 'right',
+        'right': 'left',
+        'none': 'left',
+        'through': 'none',
+    }
+    @classmethod
+    def _map_wrap_mode_to_float_mode(cls, wrap_mode):
+        default_float_mode = 'none'
+        return cls._WRAP_MODE_TO_FLOAT_MODE_MAP.get(wrap_mode, default_float_mode)
+
+    @staticmethod
+    def _bonund_boxes(boxes):
+        # boxes: list[(x,y,w,h)]
+        y_min,y_max=None,None
+        x_min,x_max=None,None
+        for box in boxes:
+            x,y,w,h = box
+            x_low,x_high = min(x,x+w),max(x,x+w)
+            y_low,y_high = min(y,y+h),max(y,y+h)
+            if y_max is None or y_max < y_high: y_max = y_high
+            if y_min is None or y_min > y_low:  y_min = y_low
+            if x_max is None or x_max < x_high: x_max = x_high
+            if x_min is None or x_min > x_low:  x_min = x_low
+        return x_min,x_max,y_min,y_max
+
+    @staticmethod
+    def _generate_float_span(boxes, wrap_modes):
+        # accept boxes and wrap modes
+        # wrap_mode should not be through
+        cls = ODTConverter
+        assert len(boxes) == len(wrap_modes)
+        box_count = len(boxes)
+        result = ''
+        if box_count == 0:
+            pass
+        elif box_count == 1:
+            xy_boundary = cls._bonund_boxes(boxes)
+            assert len(xy_boundary) == 4 and all(value is not None for value in xy_boundary)
+            wrap_mode = wrap_modes[0]
+            x_min,x_max,y_min,y_max = xy_boundary
+            if wrap_mode == 'none':
+                x_min,x_max = '0','100%'
+            float_mode = cls._map_wrap_mode_to_float_mode(wrap_mode)
+            result = (
+                f'<span style="float:{float_mode};width:100%;height:{y_max};shape-outside:polygon('
+                f'{x_min} {y_min},{x_max} {y_min},{x_max} {y_max},{x_min} {y_max}'
+                ')"></span>'
+            )
+        else: # box_count > 0
+            pass
+        return result
+
     def _process_paragraph_content_split(self, element: ET.Element, text_decoration: TextDecoration) -> tuple[str, list[str], list[str]]:
         """Process paragraph content, separating inline content, paragraph anchors, and page anchors."""
         # NOTE: Maybe respect element order
         inline_parts = []
         anchored_parts = []
+        boxes = []
+        wrap_modes = []
         page_anchors = []
 
         # Add element's direct text
@@ -756,6 +1000,15 @@ class ODTConverter:
             is_para_anchored = (anchor_type == 'paragraph')
             is_page_anchored = (anchor_type == 'page')
             
+            if is_para_anchored:
+                box = self._get_element_box(child)
+                wrap_props = self._get_element_wrap_properties(child)
+                wrap_mode = self._map_wrap_properties_to_wrap_mode(*wrap_props)
+                if box and wrap_props and wrap_mode != 'through':
+                    assert wrap_mode in ('left', 'right', 'none')
+                    boxes.append(box)
+                    wrap_modes.append(wrap_mode)
+
             child_html = self._process_child_to_html(child, text_decoration)
             
             # FIXME following ignores the orignal elements order in content.xml
@@ -769,9 +1022,13 @@ class ODTConverter:
             # Tail text always belongs to the inline flow
             if child.tail:
                 inline_parts.append(escape(child.tail))
+        
+        float_span = self._generate_float_span(boxes, wrap_modes)
+        if float_span:
+            anchored_parts.insert(0, float_span)
                 
-        return "".join(inline_parts), anchored_parts, page_anchors
-    
+        return "".join(inline_parts), anchored_parts, page_anchors 
+
     def _process_heading(self, heading: ET.Element) -> str:
         """Process a heading element."""
         level = heading.get(f"{{{NAMESPACES['text']}}}outline-level", "1")
@@ -923,6 +1180,32 @@ class ODTConverter:
         
         return f'<a href="{escape(href)}">{content}</a>'
     
+    @staticmethod
+    def _remap_z_index(z_index: int | str, is_position_absolute: bool, through: str | None) -> int | None:
+        remapped_z_index = None
+        if isinstance(z_index, str):
+            try:
+                z_index = int(z_index)
+            except:
+                z_index = None
+        if z_index is not None:
+            # z-index mapping example
+            # 1,2,3,4    => 11,12,13,14
+            # 0,-1,-2,-3 => -10,-11,-12,-13
+            # -899,-900,-901,-902 => -909,-910,-910,-910
+            remapped_z_index = z_index + 10 if z_index > 0 else z_index - 10
+            remapped_z_index = max(-910, remapped_z_index)
+        elif is_position_absolute:
+            # supply default z_index value if position is absolute
+            # let z be negative by default to let the text flow through it
+            if through == 'foreground': remapped_z_index = 5
+            elif through == 'background': remapped_z_index = -5
+            else: remapped_z_index = -3
+        else:
+            # remapped_z_index = -2
+            pass
+        return remapped_z_index
+
     def _process_frame(self, frame: ET.Element) -> str:
         """Process a frame element (usually contains images or drawings).
         
@@ -941,10 +1224,6 @@ class ODTConverter:
             style_parts.append(f"width: {width}")
         if height:
             style_parts.append(f"height: {height}")
-        
-        z_index = frame.get(f"{{{NAMESPACES['draw']}}}z-index", None)
-        if z_index is not None:
-            style_parts.append(f'z-index: {z_index}')
 
         # Get style name and properties
         style_name = frame.get(f"{{{NAMESPACES['draw']}}}style-name", "")
@@ -1075,17 +1354,24 @@ class ODTConverter:
             # as-char svg:x & svg:y are taken care by the helper (anchor, aligner, padder) later
             pass
         position_style_str = ';'.join(position_style_parts)
+
+        # z-index assignment
+        z_index = frame.get(f"{{{NAMESPACES['draw']}}}z-index", None)
+        wrap,through = self._get_element_wrap_properties(frame)
+        z_index = self._remap_z_index(z_index, is_position_absolute, through)
+        if z_index is not None:
+            style_parts.append(f'z-index: {z_index}')
+        # WORKAROUND: To provide both view for absolute objects and text flows, 
+        # as current absolute objects doesn't have collision box, 
+        # and just let the text flow through, so setting opacity and/or z-index
+        # to enable user to be able to view both.
+        if is_position_absolute:
+            # style_parts.append("opacity: 0.9")
+            # style_parts.append("z-index: -10")
+            pass
             
         # If we found content, return it
         if frame_content_parts:
-            # WORKAROUND: To provide both view for absolute objects and text flows, 
-            # as current absolute objects doesn't have collision box, 
-            # and just let the text flow through, so setting opacity and/or z-index
-            # to enable user to be able to view both.
-            if is_position_absolute:
-                # style_parts.append("opacity: 0.9")
-                # style_parts.append("z-index: -10")
-                pass
             # Wrap in the main frame div
             style_str = "; ".join(style_parts)
             content = '\n'.join(part for part in frame_content_parts if part)
@@ -1282,7 +1568,9 @@ class ODTConverter:
             style_str += "; display: inline-block"
 
         z_index = frame.get(f"{{{NAMESPACES['draw']}}}z-index", None)
+        wrap, through = self._get_element_wrap_properties(frame)
         if z_index is not None:
+            z_index = self._remap_z_index(z_index, True, through)
             style_str += f"; z-index: {z_index}"
             
         content = svg
@@ -1874,7 +2162,7 @@ class ODTConverter:
     <style>
         body {{
             position: relative;
-            z-index: -90;
+            z-index: -990;
             font-family: 'Noto Serif', 'Times New Roman', serif;
             line-height: 1.6;
             margin: 0;
@@ -1884,7 +2172,7 @@ class ODTConverter:
         }}
         .anchor-page {{
             position: relative;
-            z-index: -80;
+            z-index: -950;
             background-color: #fff;
             margin: 0 auto 30px auto;
             box-shadow: 0 4px 8px rgba(0,0,0,0.15);
