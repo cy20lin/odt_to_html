@@ -244,6 +244,7 @@ class ODTConverter:
         self.odt_path = Path(odt_path)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
+        self.extra_styles: dict[str, dict] = {}
         self.text_decorations: dict[str, TextDecoration] = {} # key is style_name
         self.list_styles: dict[str, dict] = {}
         self.font_declarations: dict[str, dict] = {}
@@ -317,6 +318,7 @@ class ODTConverter:
                 continue
             
             style_props = {}
+            extra_style_props = {}
             text_decoration = TextDecoration()
             
             # Get parent style properties first
@@ -347,9 +349,10 @@ class ODTConverter:
             # Get graphic properties
             graphic_props = style.find(f"{{{NAMESPACES['style']}}}graphic-properties")
             if graphic_props is not None:
-                self._extract_graphic_properties(graphic_props, style_props)
+                self._extract_graphic_properties(graphic_props, style_props, extra_style_props)
             
             self.styles[style_name] = style_props
+            self.extra_styles[style_name] = extra_style_props
             self.text_decorations[style_name] = text_decoration
 
         # Parse Page Layouts
@@ -420,8 +423,6 @@ class ODTConverter:
         # implies the attrib style:text-underline-type should be defined and properly setted
         # so checking style:text-underline-style is enough
         text_underline = props.get(f"{{{NAMESPACES['style']}}}text-underline-style")
-        if text_underline and text_underline != 'none':
-            style_dict['text-decoration'] = 'underline'
         if text_underline is None:
             text_decoration.underline = None
         elif text_underline == 'none':
@@ -589,7 +590,7 @@ class ODTConverter:
         if vertical_align:
             style_dict['vertical-align'] = vertical_align
     
-    def _extract_graphic_properties(self, props: ET.Element, style_dict: dict) -> None:
+    def _extract_graphic_properties(self, props: ET.Element, style_dict: dict, extra_style_dict: dict) -> None:
         """Extract graphic/drawing properties."""
         # Stroke/border color
         stroke = props.get(f"{{{NAMESPACES['svg']}}}stroke-color")
@@ -663,35 +664,14 @@ class ODTConverter:
         # run-through: background | foreground
         
         wrap = props.get(f"{{{NAMESPACES['style']}}}wrap")
-        if wrap: style_dict['wrap'] = wrap
+        if wrap: extra_style_dict['wrap'] = wrap
         
         run_through = props.get(f"{{{NAMESPACES['style']}}}run-through")
-        if run_through: style_dict['run-through'] = run_through
+        if run_through: extra_style_dict['run-through'] = run_through
         
-        # NOTE:
+        # NOTE: this is currently not used
         # horizontal_pos = props.get(f"{{{NAMESPACES['style']}}}horizontal-pos")
-        # if horizontal_pos: style_dict['horizontal-pos'] = horizontal_pos
-
-        # NOTE: One may want to use the wrap relate props to determine
-        # to Determine wrapping/floating mode
-        # style_name = element.get(f"{{{NAMESPACES['draw']}}}style-name", "")
-        # is_floated = False
-        # if style_name in self.styles:
-        #     frame_style = self.styles[style_name]
-        #     wrap = frame_style.get('wrap', 'none')
-        #     run_through = frame_style.get('run-through', '')
-        #     h_pos = frame_style.get('horizontal-pos', '')
-        #     wrap_mode = None
-        #     if wrap in ('left', 'right'):
-        #         wrap_mode = wrap
-        #         is_floated = True
-        #     elif wrap in ('parallel', 'dynamic'):
-        #         if h_pos in ('left', 'from-left'):
-        #             style_parts.append("float: left")
-        #             is_floated = True
-        #         elif h_pos in ('right', 'from-right'):
-        #             style_parts.append("float: right")
-        #             is_floated = True
+        # if horizontal_pos: extra_style_dict['horizontal-pos'] = horizontal_pos
 
     def _parse_odt_transform(self, transform_str: str) -> dict:
         """Parse ODT draw:transform attribute.
@@ -904,7 +884,7 @@ class ODTConverter:
         # Get style name and properties
         style_name = element.get(f"{{{NAMESPACES['draw']}}}style-name", "")
         if style_name in self.styles:
-            frame_style = self.styles[style_name]
+            frame_style = self.extra_styles[style_name]
             wrap = frame_style.get('wrap', 'none')
             run_through = frame_style.get('run-through', 'background')
             return wrap,run_through
