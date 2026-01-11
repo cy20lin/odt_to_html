@@ -105,6 +105,9 @@ class Length:
     def __neg__(self):
         return Length(-self.value , self.unit)
 
+    def __abs__(self):
+        return Length(abs(self.value), self.unit)
+
     # Comparison
     def __eq__(self, other):
         if not isinstance(other, Length):
@@ -140,6 +143,120 @@ class Length:
     def __str__(self):
         return f'{self.value:.6g}{self.unit}'
 
+def merge_intervals(intervals):
+    '''
+    Given maybe overlapping intervals,
+    Merge and compute non overlapping initial position sorted intervals
+
+    Arguments: 
+    - intervals: [(x1,x2)]
+    Result:
+    - merged_intervals: [(y1,y2)]
+    - indices_group: list[list[int]]
+    '''
+    if not intervals:
+        return [],[]
+    # sort by starting position
+    intervals.sort(key=lambda x: x[0])
+    merged = [intervals[0]]
+    indices_group = [[0]]
+    for i,current in enumerate(intervals[1:],1):
+        prev_start, prev_end = merged[-1]
+        curr_start, curr_end = current
+        # if overlapped or touched
+        if curr_start <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, curr_end))
+            indices_group[-1].append(i)
+        else:
+            merged.append(current)
+            indices_group.append([i])
+
+    return merged, indices_group
+
+import heapq
+from collections import Counter
+
+def skyline_paths(boxes):
+    events = []
+    for x, y, w, h in boxes:
+        events.append((x, 1, y, y + h))
+        events.append((x + w, -1, y, y + h))
+
+    events.sort(key=lambda e: (e[0], -e[1]))
+
+    bottoms, tops = [], []
+    bcount, tcount = Counter(), Counter()
+
+    upper_paths = []
+    lower_paths = []
+    cu = cl = None
+    active = False
+
+    prev_x = None
+    prev_top = None
+    prev_bot = None
+
+    def clean(heap, counter):
+        while heap and counter[abs(heap[0][0])] == 0:
+            heapq.heappop(heap)
+
+    for x, typ, yb, yt in events:
+        if prev_x is not None and x != prev_x and active:
+            # horizontal extension only if different from last point
+            if cu[-1] != (prev_x, prev_top):
+                cu.append((prev_x, prev_top))
+            cu.append((x, prev_top))
+
+            if cl[-1] != (prev_x, prev_bot):
+                cl.append((prev_x, prev_bot))
+            cl.append((x, prev_bot))
+
+        # apply event
+        if typ == 1:
+            heapq.heappush(bottoms, (yb, x))
+            heapq.heappush(tops, (-yt, x))
+            bcount[yb] += 1
+            tcount[yt] += 1
+        else:
+            bcount[yb] -= 1
+            if bcount[yb] == 0: del bcount[yb]
+            tcount[yt] -= 1
+            if tcount[yt] == 0: del tcount[yt]
+
+        clean(bottoms, bcount)
+        clean(tops, tcount)
+
+        curr_top = -tops[0][0] if tops else None
+        curr_bot = bottoms[0][0] if bottoms else None
+
+        # end path
+        if active and not tops:
+            upper_paths.append(cu)
+            lower_paths.append(cl)
+            cu = cl = None
+            active = False
+
+        # start new path
+        if not active and tops:
+            active = True
+            cu = [(x, curr_top)]
+            cl = [(x, curr_bot)]
+
+        # vertical change (avoid duplicates)
+        if active:
+            if curr_top != prev_top:
+                if cu[-1] != (x, curr_top):
+                    cu.append((x, curr_top))
+
+            if curr_bot != prev_bot:
+                if cl[-1] != (x, curr_bot):
+                    cl.append((x, curr_bot))
+
+        prev_x = x
+        prev_top = curr_top
+        prev_bot = curr_bot
+
+    return upper_paths, lower_paths
 
 # ODF XML namespaces
 NAMESPACES = {
@@ -901,7 +1018,7 @@ class ODTConverter:
         'none': 'none',
     }
     @classmethod
-    def _map_wrap_properties_to_wrap_mode(cls, wrap, through):
+    def _map_wrap_properties_to_wrap_mode(cls, wrap, through) -> str:
         default_wrap_mode = 'none'
         return cls._WRAP_TO_WRAP_MODE_MAP.get(wrap, default_wrap_mode)
     
@@ -909,11 +1026,13 @@ class ODTConverter:
         'left': 'right',
         'right': 'left',
         'none': 'left',
-        'through': 'none',
+        # 'through': 'none',
     }
     @classmethod
-    def _map_wrap_mode_to_float_mode(cls, wrap_mode):
-        default_float_mode = 'none'
+    def _map_wrap_mode_to_float_mode(cls, wrap_mode) -> str | None:
+        # use None instead of 'none' for not creating the span element but do nothing
+        default_float_mode = None
+        # default_float_mode = 'none'
         return cls._WRAP_MODE_TO_FLOAT_MODE_MAP.get(wrap_mode, default_float_mode)
 
     @staticmethod
@@ -953,9 +1072,78 @@ class ODTConverter:
                 f'<span style="float:{float_mode};width:100%;height:{y_max};shape-outside:polygon('
                 f'{x_min} {y_min},{x_max} {y_min},{x_max} {y_max},{x_min} {y_max}'
                 ')"></span>'
-            )
+            ) if float_mode is not None else ''
         else: # box_count > 0
-            pass
+            intervals = [(y,y+h) for x,y,w,h in boxes]
+            assert intervals
+            intervals,indices_group = merge_intervals(intervals)
+            upper_paths, lower_paths = skyline_paths([(y,x,h,w) for x,y,w,h in boxes])
+            element_strs = []
+            y_base = Length(0, boxes[0][0].unit)
+            for interval, indices, upper_path, lower_path in zip(intervals,indices_group,upper_paths,lower_paths):
+                first_index = indices[0]
+                wrap_mode = wrap_modes[first_index]
+                float_mode = cls._map_wrap_mode_to_float_mode(wrap_mode)
+                if wrap_mode == 'right':
+                    assert float_mode is not None
+                    y_low, y_high = interval
+                    dy_low = y_low - y_base
+                    dy_high = y_high - y_base
+                    polygon_strs = []
+                    y = upper_path[0][0]
+                    dy = y - y_base
+                    polygon_strs.append(f'0 {dy}')
+                    for y,x in upper_path:
+                        dy = y - y_base
+                        polygon_strs.append(f'{x} {dy}')
+                    y = upper_path[-1][0]
+                    dy = y - y_base
+                    polygon_strs.append(f'0 {dy}')
+                    polygon_str = ','.join(polygon_strs)
+                    element_str = (
+                        f'<span style="float:{float_mode};width:100%;height:{dy};shape-outside:polygon('
+                        f'{polygon_str}'
+                        ')"></span>'
+                    )
+                    element_strs.append(element_str)
+                    y_base = y_high
+                elif wrap_mode == 'left':
+                    assert float_mode is not None
+                    y_low, y_high = interval
+                    dy_low = y_low - y_base
+                    dy_high = y_high - y_base
+                    polygon_strs = []
+                    y = lower_path[0][0]
+                    dy = y - y_base
+                    polygon_strs.append(f'100% {dy}')
+                    for y,x in lower_path:
+                        dy = y - y_base
+                        polygon_strs.append(f'{x} {dy}')
+                    y = lower_path[-1][0]
+                    dy = y - y_base
+                    polygon_strs.append(f'100% {dy}')
+                    polygon_str = ','.join(polygon_strs)
+                    element_str = (
+                        f'<span style="float:{float_mode};width:100%;height:{dy};shape-outside:polygon('
+                        f'{polygon_str}'
+                        ')"></span>'
+                    )
+                    element_strs.append(element_str)
+                    y_base = y_high
+                elif wrap_mode == 'none':
+                    assert float_mode is not None
+                    y_low, y_high = interval
+                    dy_low = y_low - y_base
+                    dy_high = y_high - y_base
+                    element_str = (
+                        f'<span style="float:{float_mode};width:100%;height:{dy_high};shape-outside:polygon('
+                        f'0 {dy_low},100% {dy_low},100% {dy_high},0 {dy_high}'
+                        ')"></span>'
+                    )
+                    element_strs.append(element_str)
+                    y_base = y_high
+            result = ''.join(element_strs)
+
         return result
 
     def _process_paragraph_content_split(self, element: ET.Element, text_decoration: TextDecoration) -> tuple[str, list[str], list[str]]:
