@@ -5,11 +5,30 @@ ODT to HTML Converter
 Converts OpenDocument Text (.odt) files to standalone HTML with embedded resources.
 All images and media are embedded as base64 data URIs for single-file portability.
 
-Usage:
-    python odt_to_html.py <input.odt> <output.html> [--page-breaks]
-    
-Options:
-    --page-breaks    Show visible page break separators in output HTML
+positional arguments:
+  input                 Path to the input ODT file
+  output                Path for the output HTML file
+
+options:
+  -h, --help            show this help message and exit
+  --show-page-breaks [SHOW_PAGE_BREAKS]
+                        Show page break character in output HTML (default: False)
+  --title TITLE         Specify the title explicitly
+  --title-from-metadata [TITLE_FROM_METADATA]
+                        Extract title from ODT metadata (default: True). Use --title-from-metadata=0 to disable.
+  --title-from-styled-title [TITLE_FROM_STYLED_TITLE]
+                        Extract title from first "Title" styled paragraph (default: True). Use --title-from-styled-title=0 to disable.
+  --title-from-h1 [TITLE_FROM_H1]
+                        Extract title from first Heading 1 (default: True). Use --title-from-h1=0 to disable.
+  --title-fallback TITLE_FALLBACK
+                        Fallback title if no other title found
+  --title-from-filename [TITLE_FROM_FILENAME]
+                        Use filename as title if no other title found (default: False). Use --title-from-filename=1 to enable.
+
+Examples:
+    python odt_to_html.py document.odt output.html
+    python odt_to_html.py document.odt output.html --no-page-breaks
+    python odt_to_html.py "path/to/my document.odt" "path/to/output.html"
 """
 
 import argparse
@@ -24,7 +43,14 @@ from html import escape
 from pathlib import Path
 from xml.etree import ElementTree as ET
 import traceback
-from typing import Callable, Optional
+from typing import Callable, Optional, Union, IO
+from io import BytesIO
+from pathlib import Path
+import textwrap
+
+
+StrPath = Union[str, Path]
+SeekableIO = IO[bytes]
 
 
 def str_to_bool(s: str):
@@ -369,21 +395,35 @@ class TextDecoration(BaseModel):
         if self.underline is None: self.underline = base.underline
         return self
 
-class ODTConverter:
+
+import pydantic
+
+class OdtToHtmlConverterConfig(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=False)
+    show_page_breaks: bool
+    title: Optional[str] = None
+    title_from_metadata: bool
+    title_from_styled_title: bool
+    title_from_h1: bool
+    title_from_filename: bool
+    title_fallback: Optional[str] = None
+
+class OdtToHtmlConverterRuntime(pydantic.BaseModel):
+    def __init__(self, config=None):
+        # Lets do l
+        # mimetypes.init()
+        pass
+
+    def shutdown(self):
+        pass
+
+class OdtToHtmlConverter:
     """Converts ODT files to HTML with embedded resources."""
-    
-    def __init__(
-        self, 
-        odt_path: str, 
-        show_page_breaks: bool = True,
-        title: str = None, 
-        title_from_metadata: bool = True,
-        title_from_styled_title: bool = True,
-        title_from_h1: bool = True,
-        title_from_filename: bool = True,
-        title_fallback: str = None
-    ):
-        self.odt_path = Path(odt_path)
+    Config = OdtToHtmlConverterConfig
+    Runtime = OdtToHtmlConverterRuntime
+    def __init__(self, config: OdtToHtmlConverterConfig, runtime: Optional[OdtToHtmlConverterRuntime] = None):
+        self.config = config
+        self.runtime = runtime if runtime is not None else self.Runtime(config=config)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
         self.extra_styles: dict[str, dict] = {}
@@ -391,7 +431,7 @@ class ODTConverter:
         self.list_styles: dict[str, dict] = {}
         self.font_declarations: dict[str, dict] = {}
         self.footnotes: list[dict] = []  # Collect footnotes for end of document
-        self.show_page_breaks = show_page_breaks
+        self.show_page_breaks = config.show_page_breaks
         self.current_page_anchors: list[str] = []
         self.list_style_name_stack: list[str] = []
         self.page_properties: dict[str, str] = {
@@ -403,22 +443,27 @@ class ODTConverter:
             'margin-right': '2cm'
         }
         # Title configuration
-        self.overridden_title = title
-        self.use_meta_title = title_from_metadata
-        self.use_styled_title = title_from_styled_title
-        self.use_h1_title = title_from_h1
-        self.use_filename_title = title_from_filename
-        self.fallback_title = title_fallback
-        
-    def convert(self) -> str:
+        self.overridden_title = config.title
+        self.use_meta_title = config.title_from_metadata
+        self.use_styled_title = config.title_from_styled_title
+        self.use_h1_title = config.title_from_h1
+        self.use_filename_title = config.title_from_filename
+        self.fallback_title = config.title_fallback
+
+    def convert(self, file: Union[StrPath,bytes,IO[bytes]], title: Optional[str]) -> str:
         """Convert the ODT file to HTML string."""
-        if not self.odt_path.exists():
-            raise FileNotFoundError(f"ODT file not found: {self.odt_path}")
+
+        # Normalize input
+        fp = self._normalize_source(file)
+
+        # Check ZIP validity
+        if not zipfile.is_zipfile(fp):
+            raise ValueError("Invalid ODT file (not a valid ZIP archive)")
         
-        if not zipfile.is_zipfile(self.odt_path):
-            raise ValueError(f"Invalid ODT file (not a valid ZIP archive): {self.odt_path}")
+        # Reset pointer (zipfile.is_zipfile() moves it)
+        fp.seek(0)
         
-        with zipfile.ZipFile(self.odt_path, 'r') as odt_zip:
+        with zipfile.ZipFile(fp, 'r') as odt_zip:
             # Load all resources (images, etc.)
             self._load_resources(odt_zip)
             
@@ -439,9 +484,41 @@ class ODTConverter:
                 html_body += self._generate_footnotes_section()
         
             # Determine title
-            doc_title = self._determine_title(odt_zip, content_xml)
+            doc_title = self._determine_title(odt_zip, content_xml, title)
         
         return self._wrap_html(html_body, doc_title)
+
+    @staticmethod
+    def _normalize_source(src: Union[StrPath, bytes, IO[bytes]]) -> SeekableIO:
+        """
+        Normalize input src into a seekable binary IO object.
+        Accepts: str path, Path, bytes, or an existing seekable IO[bytes].
+        """
+
+        # Case 1 — String 路徑或 Path
+        if isinstance(src, str):
+            if not Path(src).exists():
+                raise FileNotFoundError(f"ODT file not found: {repr(src)}")
+            return open(src, "rb")   # returns a seekable file object
+
+        if isinstance(src, Path):
+            if not src.exists():
+                raise FileNotFoundError(f"ODT file not found: {src}")
+            return open(src, "rb")   # returns a seekable file object
+
+
+        # Case 2 — bytes
+        if isinstance(src, (bytes, bytearray)):
+            return BytesIO(src)      # automatically seekable
+
+        # Case 3 — file-like object
+        if hasattr(src, "read"):
+            if hasattr(src, "seek"):
+                return src           # already usable
+            else:
+                raise TypeError("Provided file object is not seekable.")
+        
+        raise TypeError("Unsupported input type.")
     
     def _load_resources(self, odt_zip: zipfile.ZipFile) -> None:
         """Load all embedded resources from the ODT archive."""
@@ -719,20 +796,6 @@ class ODTConverter:
             border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
             if border_val is not None:
                 style_dict[border_prop] = border_val
-            # if border_val and border_val != 'none':
-            #     # Parse border value to ensure it's valid CSS. ODT might use "0.05pt solid #000000"
-            #     # We might want to ensure a minimum width for visibility if it's very thin
-            #     parts = border_val.split()
-            #     if len(parts) >= 3 and parts[0].endswith('pt'):
-            #         try:
-            #             width = float(parts[0][:-2])
-            #             if width < 0.5:
-            #                 # Ensure minimum visibility
-            #                 parts[0] = "0.5pt"
-            #                 border_val = " ".join(parts)
-            #         except ValueError:
-            #             pass
-            #     style_dict[border_prop] = border_val
         
         bg_color = props.get(f"{{{NAMESPACES['fo']}}}background-color")
         if bg_color and bg_color != 'transparent':
@@ -790,17 +853,6 @@ class ODTConverter:
             border_val = props.get(f"{{{NAMESPACES['fo']}}}{border_prop}")
             if border_val is not None:
                 style_dict[border_prop] = border_val
-            # if border_val and border_val != 'none':
-            #     parts = border_val.split()
-            #     if len(parts) >= 3 and parts[0].endswith('pt'):
-            #         try:
-            #             width = float(parts[0][:-2])
-            #             if width < 0.5:
-            #                 parts[0] = "0.5pt"
-            #                 border_val = " ".join(parts)
-            #         except ValueError:
-            #             pass
-            #     style_dict[border_prop] = border_val
 
         # Padding/Margin
         padding = props.get(f"{{{NAMESPACES['fo']}}}padding")
@@ -952,9 +1004,14 @@ class ODTConverter:
                 
         return False
 
-    def _determine_title(self, odt_zip: zipfile.ZipFile, content_xml: str) -> str:
+    def _determine_title(self, odt_zip: zipfile.ZipFile, content_xml: str, title: Optional[str]) -> str:
         """Determine the document title based on precedence rules."""
-        # 1. User Argument
+
+        # 0. User Argument from current call
+        if title:
+            return title
+
+        # 1. User Argument from config
         if self.overridden_title:
             return self.overridden_title
             
@@ -1226,7 +1283,7 @@ class ODTConverter:
     def _generate_float_span(boxes, wrap_modes):
         # accept boxes and wrap modes
         # wrap_mode should not be through
-        cls = ODTConverter
+        cls = OdtToHtmlConverter
         assert len(boxes) == len(wrap_modes)
         box_count = len(boxes)
         result = ''
@@ -1636,6 +1693,7 @@ class ODTConverter:
                 frame_content_parts.append(self._process_image(child, style_parts.copy() + child_style, frame_name))
                 # frame_content_parts.append(self._process_image(child, child_style, frame_name))
             elif tag == 'text-box':
+                # NOTE: maybe refactor using self._process_text_box() ?
                 # Text box needs to be a positioning context for shapes inside
                 # Get min-height from the text-box element
                 tb_min_height = child.get(f"{{{NAMESPACES['fo']}}}min-height", "")
@@ -1785,7 +1843,85 @@ class ODTConverter:
             elif tag == 'list':
                 parts.append(self._process_list(child))
         return '\n'.join(parts)
-    
+
+    _EXTENSION_TO_MIMETYPE_MAP = {
+        # --- Images ---
+        "png":  "image/png",
+        "jpg":  "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif":  "image/gif",
+        "svg":  "image/svg+xml",
+        "webp": "image/webp",
+        "bmp":  "image/bmp",
+        "tif":  "image/tiff",
+        "tiff": "image/tiff",
+
+        # --- Audio ---
+        "mp3":  "audio/mpeg",
+        "ogg":  "audio/ogg",
+        "oga":  "audio/ogg",
+        "wav":  "audio/wav",
+        "flac": "audio/flac",
+        "m4a":  "audio/mp4",
+
+        # --- Video ---
+        "mp4": "video/mp4",
+        "m4v": "video/mp4",
+        "webm":"video/webm",
+        "ogv": "video/ogg",
+        "avi": "video/x-msvideo",
+        "mov": "video/quicktime",
+        "wmv": "video/x-ms-wmv",
+        "mkv": "video/x-matroska",
+
+        # --- Documents / Embedded ---
+        "pdf":  "application/pdf",
+        "odt":  "application/vnd.oasis.opendocument.text",
+        "ods":  "application/vnd.oasis.opendocument.spreadsheet",
+        "odp":  "application/vnd.oasis.opendocument.presentation",
+        "odg":  "application/vnd.oasis.opendocument.graphics",
+        "doc":  "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls":  "application/vnd.ms-excel",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt":  "application/vnd.ms-powerpoint",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+
+        # --- Web assets ---
+        "html": "text/html",
+        "htm":  "text/html",
+        "xhtml":"application/xhtml+xml",
+        "css":  "text/css",
+        "js":   "application/javascript",
+        "json": "application/json",
+        "xml":  "application/xml",
+
+        # --- Fonts ---
+        "ttf":  "font/ttf",
+        "otf":  "font/otf",
+        "woff": "font/woff",
+        "woff2":"font/woff2",
+
+        # --- Archives / misc ---
+        "7z" : "application/x-7z-compressed",
+        "zip": "application/zip",
+        "tar": "application/x-tar",
+    }
+
+    def _guess_mimetype(self, href: str, default_mimetype: str = 'application/octet-stream'):
+        extension = href.rsplit(".", 1)[-1].lower()
+        mimetype = self._EXTENSION_TO_MIMETYPE_MAP.get(extension, None)
+        if mimetype is None:
+            # NOTE: Use mimetypes.guess_type as fallback cause the initialization is slow
+            # the initialization take around 0.26sec / total 0.32sec, which is A LOT OF time
+            # avoid time consuming init, use init on demand strategy
+            # init  triggers at the first time fallback
+            mimetype = mimetypes.guess_type(href)[0]
+        if mimetype is None:
+            mimetype = default_mimetype
+        # print(mimetype)
+        return mimetype
+
     def _process_image(self, image: ET.Element, style_parts: list, frame_name: str = "") -> str:
         """Process an image element with optional caption support."""
         href = image.get(f"{{{NAMESPACES['xlink']}}}href", "")
@@ -1796,7 +1932,7 @@ class ODTConverter:
         # Get the image data
         if href in self.resources:
             data = self.resources[href]
-            mime_type = mimetypes.guess_type(href)[0] or 'application/octet-stream'
+            mime_type = self._guess_mimetype(href)
             base64_data = base64.b64encode(data).decode('ascii')
             src = f"data:{mime_type};base64,{base64_data}"
         else:
@@ -2520,24 +2656,26 @@ class ODTConverter:
         html_parts.append('</section>')
         
         return '\n'.join(html_parts)
-    
+
+    _FONT_STACK_MAP = {
+        'Liberation Serif': "'Liberation Serif', 'Times New Roman', 'Georgia', serif",
+        'Liberation Sans': "'Liberation Sans', 'Arial', 'Helvetica Neue', sans-serif",
+        'Liberation Mono': "'Liberation Mono', 'Courier New', 'Consolas', monospace",
+        'Times New Roman': "'Times New Roman', 'Georgia', serif",
+        'Arial': "'Arial', 'Helvetica Neue', sans-serif",
+        'Courier New': "'Courier New', 'Consolas', monospace",
+        'Noto Serif': "'Noto Serif', 'Times New Roman', serif",
+        'Noto Sans': "'Noto Sans', 'Arial', sans-serif",
+        'Noto Sans Mono': "'Noto Sans Mono', 'Courier New', monospace",
+        'Noto Serif CJK TC': "'Noto Serif CJK TC', 'PMingLiU', 'SimSun', serif",
+        'Noto Sans CJK TC': "'Noto Sans CJK TC', 'Microsoft JhengHei', 'SimHei', sans-serif",
+    }
+
     def _wrap_html(self, body_content: str, title: str = "") -> str:
         """Wrap the body content in a complete HTML document."""
         # Build font-family CSS variables for commonly used fonts
         # Map ODF fonts to system font stacks for offline viewing
-        font_stack_map = {
-            'Liberation Serif': "'Liberation Serif', 'Times New Roman', 'Georgia', serif",
-            'Liberation Sans': "'Liberation Sans', 'Arial', 'Helvetica Neue', sans-serif",
-            'Liberation Mono': "'Liberation Mono', 'Courier New', 'Consolas', monospace",
-            'Times New Roman': "'Times New Roman', 'Georgia', serif",
-            'Arial': "'Arial', 'Helvetica Neue', sans-serif",
-            'Courier New': "'Courier New', 'Consolas', monospace",
-            'Noto Serif': "'Noto Serif', 'Times New Roman', serif",
-            'Noto Sans': "'Noto Sans', 'Arial', sans-serif",
-            'Noto Sans Mono': "'Noto Sans Mono', 'Courier New', monospace",
-            'Noto Serif CJK TC': "'Noto Serif CJK TC', 'PMingLiU', 'SimSun', serif",
-            'Noto Sans CJK TC': "'Noto Sans CJK TC', 'Microsoft JhengHei', 'SimHei', sans-serif",
-        }
+        font_stack_map = self._FONT_STACK_MAP
         
         # Generate CSS custom properties for fonts used in the document
         font_css_vars = []
@@ -2576,7 +2714,7 @@ class ODTConverter:
 """
         if title is None: 
             title = ''
-        return f'''<!DOCTYPE html>
+        result = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2735,7 +2873,7 @@ class ODTConverter:
 {body_content}
 </body>
 </html>'''
-
+        return result
 
 def main():
     parser = argparse.ArgumentParser(
@@ -2780,18 +2918,18 @@ Examples:
     if not input_path.suffix.lower() == '.odt':
         print(f"Warning: Input file does not have .odt extension: {input_path}", file=sys.stderr)
     
+    config = OdtToHtmlConverterConfig(
+        show_page_breaks=args.show_page_breaks,
+        title_from_metadata=args.title_from_metadata,
+        title_from_styled_title=args.title_from_styled_title,
+        title_from_h1=args.title_from_h1,
+        title_from_filename=args.title_from_filename,
+        title_fallback=args.title_fallback,
+    )
+    
     try:
-        converter = ODTConverter(
-            str(input_path), 
-            show_page_breaks=args.show_page_breaks,
-            title=args.title,
-            title_from_metadata=args.title_from_metadata,
-            title_from_styled_title=args.title_from_styled_title,
-            title_from_h1=args.title_from_h1,
-            title_from_filename=args.title_from_filename,
-            title_fallback=args.title_fallback
-        )
-        html_content = converter.convert()
+        converter = OdtToHtmlConverter(config)
+        html_content = converter.convert(input_path, title=args.title)
         
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2818,4 +2956,10 @@ Examples:
 
 
 if __name__ == '__main__':
+    # import sys
+    # from pyinstrument import Profiler
+    # profiler = Profiler()
+    # profiler.start()
     main()
+    # profiler.stop()
+    # profiler.open_in_browser()
