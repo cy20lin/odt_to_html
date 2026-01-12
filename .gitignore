@@ -9,7 +9,7 @@ old/
 tmp/
 out/
 other/
-/sample*.html
-/sample*.odt
-/sample*.xml
-/sample*.png
+# /sample*.html
+# /sample*.odt
+# /sample*.xml
+# /sample*.png

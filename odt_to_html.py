@@ -1834,21 +1834,22 @@ class ODTConverter:
         style_name = shape.get(f"{{{NAMESPACES['draw']}}}style-name", "")
         shape_style = self.styles.get(style_name, {})
         
-        fill_color = shape_style.get('fill', '#e0e0e0' if 'fill' not in shape_style else 'none')
-        stroke_color = shape_style.get('stroke', '#333333' if 'stroke' not in shape_style else 'none')
+        # Base colors from style
+        base_fill_color = shape_style.get('fill', '#e0e0e0' if 'fill' not in shape_style else 'none')
+        base_stroke_color = shape_style.get('stroke', '#333333' if 'stroke' not in shape_style else 'none')
         stroke_width = shape_style.get('stroke-width', '1pt')
         
         # Override defaults if explicit NONE found in style dict (from fill="none")
         if shape_style.get('fill') == 'none':
-            fill_color = 'none'
+            base_fill_color = 'none'
         if shape_style.get('stroke') == 'none':
-            stroke_color = 'none'
+            base_stroke_color = 'none'
         
         # ODT custom shapes usually have a viewBox coordinate system (e.g. 0 0 21600 21600)
         enhanced_geom = shape.find(f".//{{{NAMESPACES['draw']}}}enhanced-geometry")
         
         view_box = "0 0 21600 21600" # Default ODT viewbox
-        path_data = ""
+        subpaths = []
         
         if enhanced_geom is not None:
              # Get viewBox if available
@@ -1862,7 +1863,7 @@ class ODTConverter:
             # Get path and substitute variables
             raw_path = enhanced_geom.get(f"{{{NAMESPACES['draw']}}}enhanced-path", "")
             if raw_path:
-                path_data = self._convert_path(raw_path, variables)
+                subpaths = self._convert_path(raw_path, variables)
         
         # Check for text inside the shape
         text_content_parts = []
@@ -1878,25 +1879,64 @@ class ODTConverter:
                 text_content_parts.append(self._process_list(child))
 
         text_html = "".join(text_content_parts)
-            
+
         # Construct SVG
-        # We use the viewBox from ODT to let the path coordinates work directly
-        svg_content = ""
-        if path_data:
-             svg_content = f'<path d="{path_data}" fill="{fill_color}" stroke="{stroke_color}" stroke-width="{stroke_width}" vector-effect="non-scaling-stroke"/>'
+        # We need to group subpaths by their fill/stroke requirements
+        svg_paths_html = []
+        
+        if subpaths:
+            # Group compatible paths to reduce DOM elements where possible
+            # Compatible means same effective fill and stroke behavior
+            current_group = []
+            
+            # Grouping key: (has_fill, has_stroke)
+            current_key = None
+            
+            for sub in subpaths:
+                # Determine effective colors for this subpath
+                has_fill = sub['fill'] and base_fill_color != 'none'
+                has_stroke = sub['stroke'] and base_stroke_color != 'none'
+                
+                key = (has_fill, has_stroke)
+                
+                if current_key is None:
+                    current_key = key
+                    current_group.append(sub['d'])
+                elif key == current_key:
+                    current_group.append(sub['d'])
+                else:
+                    # Flush current group
+                    if current_group:
+                        d_attr = " ".join(current_group)
+                        fill_attr = base_fill_color if current_key[0] else "none"
+                        stroke_attr = base_stroke_color if current_key[1] else "none"
+                        # Use fill-rule="evenodd" to handle holes correctly (e.g. eyes in face)
+                        svg_paths_html.append(f'<path d="{d_attr}" fill="{fill_attr}" stroke="{stroke_attr}" stroke-width="{stroke_width}" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>')
+                    
+                    # Start new group
+                    current_key = key
+                    current_group = [sub['d']]
+            
+            # Flush final group
+            if current_group:
+                d_attr = " ".join(current_group)
+                fill_attr = base_fill_color if current_key[0] else "none"
+                stroke_attr = base_stroke_color if current_key[1] else "none"
+                svg_paths_html.append(f'<path d="{d_attr}" fill="{fill_attr}" stroke="{stroke_attr}" stroke-width="{stroke_width}" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>')
         else:
-             # Fallback if no path (e.g. simple rect logic needed but custom-shape should have path or type)
-             # Some shapes use modifiers and type='rectangle' without explicit path.
-             # For now, minimal fallback if empty path but existing geometry
+             # Fallback if no path but fallback rendering needed?
              pass
              
+        svg_content = "\n".join(svg_paths_html)
+              
         svg = f'''<svg width="{width}" height="{height}" viewBox="{view_box}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
             {svg_content}
         </svg>'''
         
         # If there is text, we need to overlay it. 
-        # ODT text inside shapes is usually centered or fully filling the shape box.
+        # NOTE: ODT text inside shapes is usually centered or fully filling the shape box. adopt this apporach as approximation for now
         # We can use a relative container.
+        # FIXME: should respect text box location in ODT
         
         style_str = "; ".join(style_parts)
         if "position" not in style_str:
@@ -1913,12 +1953,10 @@ class ODTConverter:
         content = svg
         if text_html.strip():
             # Overlay text centered
-            # content += f'<div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden;">{text_html}</div>'
-            # NOTE: fix as-char issue
+            # NOTE: fix as-char issue, use span to avoid invalid html element hierarchy like <span><div></div></span>
             content += f'<span class="div" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow: hidden;">{text_html}</span>'
 
-        # NOTE
-        # return f'<div class="draw-custom-shape" style="{style_str}">{content}</div>'
+        # NOTE: fix as-char issue, use span to avoid invalid html element hierarchy like <span><div></div></span>
         return f'<span class="div draw-custom-shape" style="{style_str}">{content}</span>'
 
     def _solve_equations(self, geometry: ET.Element, frame: ET.Element) -> dict:
@@ -2005,8 +2043,12 @@ class ODTConverter:
                     
         return variables
 
-    def _convert_path(self, path_data: str, variables: dict) -> str:
-        """Convert ODT enhanced path to SVG path."""
+    def _convert_path(self, path_data: str, variables: dict) -> list[dict]:
+        """Convert ODT enhanced path to valid SVG path data chunks.
+        
+        Returns a list of dicts: {'d': str, 'fill': bool, 'stroke': bool}
+        handling ODT commands like 'F' (No Fill), 'S' (No Stroke), 'N' (New Path).
+        """
         # Split tokens
         raw_tokens = path_data.split()
         
@@ -2026,7 +2068,9 @@ class ODTConverter:
                     resolved_tokens.append(token)
 
         # Pass 2: Process commands and generate SVG
-        svg_path = []
+        subpaths = []
+        current_path_cmds = []
+
         current_x = 0.0
         current_y = 0.0
         # Track start of subpath for Z (Close) - usually M sets this
@@ -2035,6 +2079,10 @@ class ODTConverter:
         
         # Track subpath start state for implicit moves (U following N)
         is_subpath_start = True
+
+        # Default state for new paths
+        current_fill = True
+        current_stroke = True
         
         def fmt(val):
             if isinstance(val, float):
@@ -2073,7 +2121,7 @@ class ODTConverter:
                 if i + 1 < len(resolved_tokens):
                     x = resolved_tokens[i]
                     y = resolved_tokens[i+1]
-                    svg_path.append(f"M {fmt(x)} {fmt(y)}")
+                    current_path_cmds.append(f"M {fmt(x)} {fmt(y)}")
                     current_x, current_y = x, y
                     subpath_start_x, subpath_start_y = x, y
                     is_subpath_start = False
@@ -2083,7 +2131,7 @@ class ODTConverter:
                 if i + 1 < len(resolved_tokens):
                     x = resolved_tokens[i]
                     y = resolved_tokens[i+1]
-                    svg_path.append(f"L {fmt(x)} {fmt(y)}")
+                    current_path_cmds.append(f"L {fmt(x)} {fmt(y)}")
                     current_x, current_y = x, y
                     is_subpath_start = False
                     i += 2
@@ -2091,18 +2139,45 @@ class ODTConverter:
                 # Cubic Bezier: C x1 y1 x2 y2 x y
                 if i + 5 < len(resolved_tokens):
                     coords = resolved_tokens[i:i+6]
-                    svg_path.append(f"C {' '.join(fmt(c) for c in coords)}")
+                    current_path_cmds.append(f"C {' '.join(fmt(c) for c in coords)}")
                     current_x, current_y = coords[4], coords[5]
                     is_subpath_start = False
                     i += 6
             elif cmd == 'Z':
-                svg_path.append("Z")
+                current_path_cmds.append("Z")
                 current_x, current_y = subpath_start_x, subpath_start_y
                 # is_subpath_start remains False usually? 
                 pass
             elif cmd == 'N':
-                # End subpath
+                # End subpath - Flush current path
+                if current_path_cmds:
+                    subpaths.append({
+                        'd': " ".join(current_path_cmds),
+                        'fill': current_fill,
+                        'stroke': current_stroke
+                    })
+                    current_path_cmds = []
+                # Reset defaults for next subpath? 
+                # ODF spec is vague but typically S/F resets or applies per subpath.
+                # In common implementations, flags apply to the subpath they appear in (at end).
+                # We assume flags (S, F) seen *before* N apply to the *just finished* subpath.
+                # So we actually need to capture flags *before* processing N?
+                # Wait, 'F' and 'S' are commands.
+                # If we see F, we set current_fill = False.
+                # If we see N, we commit.
+                # Reset for next path?
+                current_fill = True
+                current_stroke = True
                 is_subpath_start = True
+                
+            elif cmd == 'F':
+                # No Fill for current subpath
+                current_fill = False
+
+            elif cmd == 'S':
+                # No Stroke for current subpath
+                current_stroke = False
+
             elif cmd == 'X' or cmd == 'Y':
                 # Treated as Arc (Quarter Ellipse) for Round Rectangles
                 # Abs target: x y
@@ -2116,7 +2191,7 @@ class ODTConverter:
                     
                     # A rx ry rot large_arc sweep x y
                     # Sweep 0 is usually correct for convex corners in standard ODF paths
-                    svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 0 0 {fmt(x)} {fmt(y)}")
+                    current_path_cmds.append(f"A {fmt(rx)} {fmt(ry)} 0 0 0 {fmt(x)} {fmt(y)}")
                     
                     current_x, current_y = x, y
                     is_subpath_start = False
@@ -2135,7 +2210,7 @@ class ODTConverter:
                     
                     # implicit move/line logic
                     action = 'M' if is_subpath_start else 'L'
-                    svg_path.append(f"{action} {fmt(sx)} {fmt(sy)}")
+                    current_path_cmds.append(f"{action} {fmt(sx)} {fmt(sy)}")
                     
                     # Draw arcs
                     if abs(end_deg - start_deg) >= 360:
@@ -2145,15 +2220,15 @@ class ODTConverter:
                         end_x = cx + rx * math.cos(end_rad)
                         end_y = cy + ry * math.sin(end_rad)
                         
-                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(mid_x)} {fmt(mid_y)}")
-                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(end_x)} {fmt(end_y)}")
+                        current_path_cmds.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(mid_x)} {fmt(mid_y)}")
+                        current_path_cmds.append(f"A {fmt(rx)} {fmt(ry)} 0 1 1 {fmt(end_x)} {fmt(end_y)}")
                     else:
                         ex = cx + rx * math.cos(end_rad)
                         ey = cy + ry * math.sin(end_rad)
                         delta = end_deg - start_deg
                         large = 1 if abs(delta) > 180 else 0
                         sweep = 1 # Clockwise usually
-                        svg_path.append(f"A {fmt(rx)} {fmt(ry)} 0 {large} {sweep} {fmt(ex)} {fmt(ey)}")
+                        current_path_cmds.append(f"A {fmt(rx)} {fmt(ry)} 0 {large} {sweep} {fmt(ex)} {fmt(ey)}")
                     
                     # Update current pos (end of arc)
                     current_x = cx + rx * math.cos(end_rad)
@@ -2166,7 +2241,15 @@ class ODTConverter:
                     i += 1
                 pass
                 
-        return " ".join(svg_path)
+        # Flush any remaining commands
+        if current_path_cmds:
+            subpaths.append({
+                'd': " ".join(current_path_cmds),
+                'fill': current_fill,
+                'stroke': current_stroke
+            })
+
+        return subpaths
     
     def _process_drawing_rect(self, frame: ET.Element, rect: ET.Element, style_parts: list) -> str:
         """Process a rectangle drawing."""
@@ -2494,7 +2577,7 @@ class ODTConverter:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="generator" content="ODT to HTML Converter v2">
+    <meta name="generator" content="ODT to HTML Converter">
     {title_element_str}
     <style>
         body {{

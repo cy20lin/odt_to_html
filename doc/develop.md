@@ -21,3 +21,12 @@ python .\html_to_png.py .\sample_test_drawing.html sample_test_drawing.html.png
 # in project root
 python .\script\extract_odt_content.py sample_test_drawing.odt content.xml
 ```
+
+## Analyze html
+
+this script analyzes and prints html tree structure. Also the content embeded base64 images is ignored for reducing interference of extreme long but unhelpful long base64 string for html structure understanding.
+
+```
+# in project root
+python .\script\analyze_html.py target_sample.html
+```

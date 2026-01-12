@@ -18,6 +18,7 @@ def convert_odt_to_png(input_file, output_dir, type='png'):
     command = [
         'soffice',
         '--headless',
+        '--invisible',
         '--convert-to',
         type,
         input_file,
