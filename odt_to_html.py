@@ -26,6 +26,21 @@ from xml.etree import ElementTree as ET
 import traceback
 from typing import Callable, Optional
 
+
+def str_to_bool(s: str):
+    if s.isupper():
+        ss = s.lower()
+    else:
+        ss = s[0].lower() + s[1:]
+    if ss in ('1','y','t','yes','true','on'):
+        return True
+    elif ss in ('0','n','f','no','false','off'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+# For processing paragraph anchored objects
+
 class Length:
     # conversion factors to meter
     _UNIT_TO_M = {
@@ -357,7 +372,17 @@ class TextDecoration(BaseModel):
 class ODTConverter:
     """Converts ODT files to HTML with embedded resources."""
     
-    def __init__(self, odt_path: str, show_page_breaks: bool = True):
+    def __init__(
+        self, 
+        odt_path: str, 
+        show_page_breaks: bool = True,
+        title: str = None, 
+        title_from_metadata: bool = True,
+        title_from_styled_title: bool = True,
+        title_from_h1: bool = True,
+        title_from_filename: bool = True,
+        title_fallback: str = None
+    ):
         self.odt_path = Path(odt_path)
         self.resources: dict[str, bytes] = {}
         self.styles: dict[str, dict] = {}
@@ -377,6 +402,13 @@ class ODTConverter:
             'margin-left': '2cm', 
             'margin-right': '2cm'
         }
+        # Title configuration
+        self.overridden_title = title
+        self.use_meta_title = title_from_metadata
+        self.use_styled_title = title_from_styled_title
+        self.use_h1_title = title_from_h1
+        self.use_filename_title = title_from_filename
+        self.fallback_title = title_fallback
         
     def convert(self) -> str:
         """Convert the ODT file to HTML string."""
@@ -815,6 +847,143 @@ class ODTConverter:
         
         return result
 
+    def _get_meta_title(self, odt_zip: zipfile.ZipFile) -> str | None:
+        """Extract title from meta.xml if available."""
+        if 'meta.xml' not in odt_zip.namelist():
+            return None
+            
+        try:
+            meta_xml = odt_zip.read('meta.xml').decode('utf-8')
+            root = ET.fromstring(meta_xml)
+            
+            # Find dc:title in office:meta
+            # Note: namespaces are registered globally but need careful handling in find
+            # dc uses http://purl.org/dc/elements/1.1/
+            
+            ns = {'dc': NAMESPACES['dc'], 'office': NAMESPACES['office']}
+            meta_office = root.find(f"{{{NAMESPACES['office']}}}meta")
+            if meta_office is not None:
+                title_elem = meta_office.find(f"{{{NAMESPACES['dc']}}}title")
+                if title_elem is not None and title_elem.text:
+                    return title_elem.text.strip()
+        except Exception:
+            pass
+            
+        return None
+
+    def _find_title_candidates(self, content_xml: str) -> dict:
+        """Parse content to find title candidates (styled title, h1)."""
+        candidates = {'styled_title': None, 'h1_title': None}
+        
+        try:
+            root = ET.fromstring(content_xml)
+            body = root.find(f".//{{{NAMESPACES['office']}}}text")
+            if body is None:
+                return candidates
+                
+            # Iterate through direct children to find first candidates
+            for child in body:
+                tag = child.tag.split('}')[-1]
+                
+                # Check for "Title" style (including parent style inheritance)
+                if tag == 'p' and not candidates['styled_title']:
+                    style_name = child.get(f"{{{NAMESPACES['text']}}}style-name", "")
+                    if self._is_title_style(style_name, root):
+                        text_content = "".join(child.itertext()).strip()
+                        if text_content:
+                            candidates['styled_title'] = text_content
+                
+                # Check for Heading 1
+                if tag == 'h' and not candidates['h1_title']:
+                    level = child.get(f"{{{NAMESPACES['text']}}}outline-level", "1")
+                    if level == "1":
+                        text_content = "".join(child.itertext()).strip()
+                        if text_content:
+                            candidates['h1_title'] = text_content
+                
+                if candidates['styled_title'] and candidates['h1_title']:
+                    break
+                    
+        except Exception:
+            pass
+            
+        return candidates
+
+    def _is_title_style(self, style_name: str, root: ET.Element) -> bool:
+        """Check if a style is a Title style, including parent style inheritance."""
+        if not style_name:
+            return False
+            
+        # Direct match
+        if 'title' in style_name.lower():
+            return True
+        
+        # Check parent style chain using parsed styles or the XML
+        visited = set()  # Prevent infinite loops
+        current_style = style_name
+        
+        while current_style and current_style not in visited:
+            visited.add(current_style)
+            
+            # First check in self.styles (which has already parsed parent-style-name)
+            # But self.styles may not have parent-style-name stored directly.
+            # Let's search the XML for the style definition
+            
+            # Find style in automatic-styles or office:styles
+            style_elem = None
+            for style in root.iter(f"{{{NAMESPACES['style']}}}style"):
+                if style.get(f"{{{NAMESPACES['style']}}}name") == current_style:
+                    style_elem = style
+                    break
+            
+            if style_elem is None:
+                break
+                
+            parent_style = style_elem.get(f"{{{NAMESPACES['style']}}}parent-style-name")
+            if parent_style:
+                if 'title' in parent_style.lower():
+                    return True
+                current_style = parent_style
+            else:
+                break
+                
+        return False
+
+    def _determine_title(self, odt_zip: zipfile.ZipFile, content_xml: str) -> str:
+        """Determine the document title based on precedence rules."""
+        # 1. User Argument
+        if self.overridden_title:
+            return self.overridden_title
+            
+        # 2. Metadata
+        if self.use_meta_title:
+            meta_title = self._get_meta_title(odt_zip)
+            if meta_title:
+                return meta_title
+        
+        # Parse content candidates if needed
+        candidates = None
+        if self.use_styled_title or self.use_h1_title:
+            candidates = self._find_title_candidates(content_xml)
+            
+        # 3. Styled Title
+        if self.use_styled_title and candidates and candidates['styled_title']:
+            return candidates['styled_title']
+            
+        # 4. Heading 1
+        if self.use_h1_title and candidates and candidates['h1_title']:
+            return candidates['h1_title']
+            
+        # 5. Fallback Argument
+        if self.fallback_title:
+            return self.fallback_title
+            
+        # 6. Filename
+        if self.use_filename_title:
+            return self.odt_path.stem
+            
+        # 7. None / Default
+        return ""
     
     def _get_style_string(self, style_name: str, predicate: Optional[Callable[[str],bool]] = None) -> str:
         """Get CSS style string for a named style."""
@@ -2266,7 +2435,7 @@ class ODTConverter:
         
         return '\n'.join(html_parts)
     
-    def _wrap_html(self, body_content: str) -> str:
+    def _wrap_html(self, body_content: str, title: str = "") -> str:
         """Wrap the body content in a complete HTML document."""
         # Build font-family CSS variables for commonly used fonts
         # Map ODF fonts to system font stacks for offline viewing
@@ -2319,14 +2488,14 @@ class ODTConverter:
             color: #999;
         }
 """
-        
+        title_element_str = f'<title>{escape(title)}</title>' if title is not None else ''
         return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="generator" content="ODT to HTML Converter v2">
-    <title>Converted Document</title>
+    {title_element_str}
     <style>
         body {{
             position: relative;
@@ -2494,8 +2663,22 @@ Examples:
     )
     parser.add_argument('input', help='Path to the input ODT file')
     parser.add_argument('output', help='Path for the output HTML file')
-    parser.add_argument('--no-page-breaks', action='store_true', default=True,
-                        help='Hide page break separators in output HTML')
+    parser.add_argument('--show-page-breaks', nargs='?', const=True, default=False, type=str_to_bool,
+                        help='Show page break character in output HTML (default: False)')
+                        
+    # Title extraction arguments
+    parser.add_argument('--title', help='Specify the title explicitly', default=None)
+    
+    # Feature flags for title extraction
+    parser.add_argument('--title-from-metadata', nargs='?', const=True, default=True, type=str_to_bool,
+                        help='Extract title from ODT metadata (default: True). Use --title-from-metadata=0 to disable.')
+    parser.add_argument('--title-from-styled-title', nargs='?', const=True, default=True, type=str_to_bool,
+                        help='Extract title from first "Title" styled paragraph (default: True). Use --title-from-styled-title=0 to disable.')
+    parser.add_argument('--title-from-h1', nargs='?', const=True, default=True, type=str_to_bool,
+                        help='Extract title from first Heading 1 (default: True). Use --title-from-h1=0 to disable.')
+    parser.add_argument('--title-fallback', help='Fallback title if no other title found', default=None)
+    parser.add_argument('--title-from-filename', nargs='?', const=True, default=False, type=str_to_bool,
+                        help='Use filename as title if no other title found (default: False). Use --title-from-filename=1 to enable.')
     
     args = parser.parse_args()
     
@@ -2511,11 +2694,15 @@ Examples:
         print(f"Warning: Input file does not have .odt extension: {input_path}", file=sys.stderr)
     
     try:
-        # Page breaks shown by default, --no-page-breaks disables them
-        show_page_breaks = not args.no_page_breaks
         converter = ODTConverter(
             str(input_path), 
-            show_page_breaks=show_page_breaks,
+            show_page_breaks=args.show_page_breaks,
+            title=args.title,
+            title_from_metadata=args.title_from_metadata,
+            title_from_styled_title=args.title_from_styled_title,
+            title_from_h1=args.title_from_h1,
+            title_from_filename=args.title_from_filename,
+            title_fallback=args.title_fallback
         )
         html_content = converter.convert()
         
