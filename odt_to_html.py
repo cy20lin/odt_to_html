@@ -2571,14 +2571,15 @@ class ODTConverter:
             color: #999;
         }
 """
-        title_element_str = f'<title>{escape(title)}</title>' if title is not None else ''
+        if title is None: 
+            title = ''
         return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="generator" content="ODT to HTML Converter">
-    {title_element_str}
+    <title>{escape(title)}</title>
     <style>
         body {{
             position: relative;
