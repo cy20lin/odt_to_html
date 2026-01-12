@@ -438,7 +438,10 @@ class ODTConverter:
             if self.footnotes:
                 html_body += self._generate_footnotes_section()
         
-        return self._wrap_html(html_body)
+            # Determine title
+            doc_title = self._determine_title(odt_zip, content_xml)
+        
+        return self._wrap_html(html_body, doc_title)
     
     def _load_resources(self, odt_zip: zipfile.ZipFile) -> None:
         """Load all embedded resources from the ODT archive."""
