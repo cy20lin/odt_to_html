@@ -46,7 +46,6 @@ import traceback
 from typing import Callable, Optional, Union, IO
 from io import BytesIO
 from pathlib import Path
-import textwrap
 
 
 StrPath = Union[str, Path]
@@ -495,7 +494,7 @@ class OdtToHtmlConverter:
         Accepts: str path, Path, bytes, or an existing seekable IO[bytes].
         """
 
-        # Case 1 — String 路徑或 Path
+        # Case 1 — String or Path
         if isinstance(src, str):
             if not Path(src).exists():
                 raise FileNotFoundError(f"ODT file not found: {repr(src)}")
