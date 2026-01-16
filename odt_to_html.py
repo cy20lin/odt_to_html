@@ -28,7 +28,7 @@ options:
 Examples:
     python odt_to_html.py document.odt output.html
     python odt_to_html.py document.odt output.html --no-page-breaks
-    python odt_to_html.py "path/to/my document.odt" "path/to/output.html"
+    python odt_to_html.py "path/to/input document.odt" "path/to/output.html"
 """
 
 import argparse
@@ -1211,7 +1211,7 @@ class OdtToHtmlConverter:
             result = f'<p class="anchor-paragraph"{style_attr}>{anchored_html}{inline_content}</p>'
         else:
             style_attr = f' style="{style_str}"' if style_str else ''
-            result = f'<p {style_attr}>{inline_content}</p>'
+            result = f'<p{style_attr}>{inline_content}</p>'
         # TODO: use <span calss="p"> instead of <p> in inline context
         return result
 
@@ -2068,9 +2068,11 @@ class OdtToHtmlConverter:
              
         svg_content = "\n".join(svg_paths_html)
               
-        svg = f'''<svg width="{width}" height="{height}" viewBox="{view_box}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-            {svg_content}
-        </svg>'''
+        svg = (
+            f'<svg width="{width}" height="{height}" viewBox="{view_box}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">'
+            f'{svg_content}'
+            '</svg>'
+        )
         
         # If there is text, we need to overlay it. 
         # NOTE: ODT text inside shapes is usually centered or fully filling the shape box. adopt this apporach as approximation for now
@@ -2398,10 +2400,12 @@ class OdtToHtmlConverter:
         svg_width = self._dimension_to_px(width)
         svg_height = self._dimension_to_px(height)
         
-        svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-            <rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"
-                  fill="#e0e0e0" stroke="#333" stroke-width="2"/>
-        </svg>'''
+        svg = (
+            f'<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">'
+            f'<rect x="2" y="2" width="{svg_width-4}" height="{svg_height-4}"'
+            ' fill="#e0e0e0" stroke="#333" stroke-width="2"/>'
+            '</svg>'
+        )
         
         style_str = "; ".join(style_parts)
         if "position" not in style_str and "display" not in style_str:
@@ -2416,10 +2420,12 @@ class OdtToHtmlConverter:
         svg_width = self._dimension_to_px(width)
         svg_height = self._dimension_to_px(height)
         
-        svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-            <ellipse cx="{svg_width/2}" cy="{svg_height/2}" rx="{svg_width/2-2}" ry="{svg_height/2-2}"
-                     fill="#e0e0e0" stroke="#333" stroke-width="2"/>
-        </svg>'''
+        svg = (
+            f'<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">'
+            f'<ellipse cx="{svg_width/2}" cy="{svg_height/2}" rx="{svg_width/2-2}" ry="{svg_height/2-2}"'
+            ' fill="#e0e0e0" stroke="#333" stroke-width="2"/>'
+            '</svg>'
+        )
         
         style_str = "; ".join(style_parts)
         if "position" not in style_str and "display" not in style_str:
@@ -2442,9 +2448,11 @@ class OdtToHtmlConverter:
         svg_width = max(x1_px, x2_px) + 10
         svg_height = max(y1_px, y2_px) + 10
         
-        svg = f'''<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">
-            <line x1="{x1_px}" y1="{y1_px}" x2="{x2_px}" y2="{y2_px}" stroke="#333" stroke-width="2"/>
-        </svg>'''
+        svg = (
+            f'<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">'
+            f'<line x1="{x1_px}" y1="{y1_px}" x2="{x2_px}" y2="{y2_px}" stroke="#333" stroke-width="2"/>'
+            '</svg>'
+        )
         
         style_str = "; ".join(style_parts)
         if "position" not in style_str and "display" not in style_str:
@@ -2671,6 +2679,29 @@ class OdtToHtmlConverter:
         'Noto Sans CJK TC': "'Noto Sans CJK TC', 'Microsoft JhengHei', 'SimHei', sans-serif",
     }
 
+    def _minify_css(self, content):
+        """
+        Minify css but preserve newline for minimal readablity.
+        
+        :param content: the css content
+        """
+        # Remove css comments
+        content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
+        # Remove starting white sapces
+        content = re.sub(r"^\s+", "", content, flags=re.MULTILINE)
+        # Remove ws after seperator
+        # content = re.sub(r"(?<=[,:;])[\t\r ]+", "", content, flags=re.MULTILINE)
+        # Remove ws before open-brace
+        # content = re.sub(r"\s+(?={)", "", content, flags=re.MULTILINE)
+        return content
+
+    def _minify_html(self, content):
+        # Remove html comments 
+        content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
+        # Remove starting white sapces
+        content = re.sub(r"^\s+", "", content, flags=re.MULTILINE)
+        return content
+
     def _wrap_html(self, body_content: str, title: str = "") -> str:
         """Wrap the body content in a complete HTML document."""
         # Build font-family CSS variables for commonly used fonts
@@ -2688,6 +2719,152 @@ class OdtToHtmlConverter:
                     # Update the style to use the full font stack
                     style_props['font-family'] = font_stack_map[font]
         
+        main_css = """
+        body {
+            position: relative;
+            z-index: -990;
+            font-family: 'Noto Serif', 'Times New Roman', serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            background-color: #f0f0f0;
+        }
+        .anchor-page {
+            position: relative;
+            z-index: -950;
+            background-color: #fff;
+            margin: 0 auto 30px auto;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+            overflow: hidden; /* Ensure content stays within page */
+        }
+        .anchor-page-content {
+            /* Position context for page anchors */
+        }
+        .anchor-as-char {
+            display: inline-grid;
+            position: relative;
+            grid-template-columns: 0 auto; /* replace first item with custom svgx */
+            grid-template-rows: 0 auto auto;
+            line-height: 0;
+        }
+        .svgy-positive-aligner {
+            display: inline-block;
+            grid-column: 1;
+            grid-row: 1;
+            background-color: aqua;
+            line-height:0;
+        }
+        .svgy-positive-padder {
+            display: inline-block;
+            grid-column: 1;
+            grid-row: 2;
+            background-color: chocolate;
+            line-height:0;
+        }
+        .svgy-negative-aligner-padder {
+            display: inline-block;
+            grid-column: 1;
+            grid-row: 3;
+            background-color: cornflowerblue;
+            line-height:0;
+        }
+        .draw-frame {
+        }
+        /* p class for mimic p tag via span tag */
+        .p {
+            display: block;
+            margin: 0 0;
+        }
+        .div {
+            display: block; 
+        }
+        p {
+            /* hardcoded value */
+            /* margin: 5em 0; */ /*for webpage use */
+            margin: 0 0; /* for document use */
+        }
+        h1, h2, h3, h4, h5, h6 {
+            margin-top: 1em;
+            margin-bottom: 0.5em;
+            color: #222;
+        }
+        table {
+            border-collapse: collapse;
+            /* margin: 1em 0; */
+        }
+        th, td {
+            /* padding: 8px; */
+            text-align: left;
+        }
+        th {
+            background-color: #f5f5f5;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+        figure {
+            margin: 1em 0;
+            text-align: center;
+        }
+        figure img {
+            display: block;
+            margin: 0 auto;
+        }
+        figcaption {
+            /*margin-top: 0.5em;*/
+            margin-top: 0em;
+            font-style: italic;
+            color: #666;
+            font-size: 0.9em;
+        }
+        a {
+            color: #0066cc;
+        }
+        ul, ol {
+            /* margin: 0.5em 0; */
+            /* padding-left: 2em; */
+        }
+        li {
+            /* margin: 0.25em 0; */
+        }
+        .footnote-ref a {
+            text-decoration: none;
+            color: #0066cc;
+        }
+        .footnotes {
+            margin-top: 2em;
+            padding-top: 1em;
+            font-size: 0.9em;
+        }
+        .footnotes h4 {
+            margin-bottom: 0.5em;
+            color: #555;
+        }
+        .footnotes-list {
+            padding-left: 1.5em;
+        }
+        .footnotes-list li {
+            margin: 0.5em 0;
+        }
+        .footnote-backref {
+            text-decoration: none;
+            color: #0066cc;
+            margin-left: 0.5em;
+        }
+        .footnotes-separator {
+            border: none;
+            border-top: 1px solid #ccc;
+            margin: 2em 0 1em 0;
+        }
+        .drawing {
+            margin: 0.5em 0;
+        }
+        .text-box {
+            margin: 0.5em 0;
+        }
+"""
         page_break_css = ""
         if self.show_page_breaks:
             page_break_css = """
@@ -2714,158 +2891,15 @@ class OdtToHtmlConverter:
 """
         if title is None: 
             title = ''
-        result = f'''<!DOCTYPE html>
+        html_format_str = '''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="generator" content="ODT to HTML Converter">
-    <title>{escape(title)}</title>
+    <title>{title}</title>
     <style>
-        body {{
-            position: relative;
-            z-index: -990;
-            font-family: 'Noto Serif', 'Times New Roman', serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 20px;
-            color: #333;
-            background-color: #f0f0f0;
-        }}
-        .anchor-page {{
-            position: relative;
-            z-index: -950;
-            background-color: #fff;
-            margin: 0 auto 30px auto;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-            overflow: hidden; /* Ensure content stays within page */
-        }}
-        .anchor-page-content {{
-            /* Position context for page anchors */
-        }}
-        .anchor-as-char {{
-            display: inline-grid;
-            position: relative;
-            grid-template-columns: 0 auto; /* replace first item with custom svgx */
-            grid-template-rows: 0 auto auto;
-            line-height: 0;
-        }}
-        .svgy-positive-aligner {{
-            display: inline-block;
-            grid-column: 1;
-            grid-row: 1;
-            background-color: aqua;
-            line-height:0;
-        }}
-        .svgy-positive-padder {{
-            display: inline-block;
-            grid-column: 1;
-            grid-row: 2;
-            background-color: chocolate;
-            line-height:0;
-        }}
-        .svgy-negative-aligner-padder {{
-            display: inline-block;
-            grid-column: 1;
-            grid-row: 3;
-            background-color: cornflowerblue;
-            line-height:0;
-        }}
-        .draw-frame {{
-        }}
-        /* p class for mimic p tag via span tag */
-        .p {{
-            display: block;
-            margin: 0 0;
-        }}
-        .div {{
-            display: block; 
-        }}
-        p {{
-            /* hardcoded value */
-            /* margin: 5em 0; */ /*for webpage use */
-            margin: 0 0; /* for document use */
-        }}
-        h1, h2, h3, h4, h5, h6 {{
-            margin-top: 1em;
-            margin-bottom: 0.5em;
-            color: #222;
-        }}
-        table {{
-            border-collapse: collapse;
-            /* margin: 1em 0; */
-        }}
-        th, td {{
-            /* padding: 8px; */
-            text-align: left;
-        }}
-        th {{
-            background-color: #f5f5f5;
-        }}
-        img {{
-            max-width: 100%;
-            height: auto;
-        }}
-        figure {{
-            margin: 1em 0;
-            text-align: center;
-        }}
-        figure img {{
-            display: block;
-            margin: 0 auto;
-        }}
-        figcaption {{
-            /*margin-top: 0.5em;*/
-            margin-top: 0em;
-            font-style: italic;
-            color: #666;
-            font-size: 0.9em;
-        }}
-        a {{
-            color: #0066cc;
-        }}
-        ul, ol {{
-            /* margin: 0.5em 0; */
-            /* padding-left: 2em; */
-        }}
-        li {{
-            /* margin: 0.25em 0; */
-        }}
-        .footnote-ref a {{
-            text-decoration: none;
-            color: #0066cc;
-        }}
-        .footnotes {{
-            margin-top: 2em;
-            padding-top: 1em;
-            font-size: 0.9em;
-        }}
-        .footnotes h4 {{
-            margin-bottom: 0.5em;
-            color: #555;
-        }}
-        .footnotes-list {{
-            padding-left: 1.5em;
-        }}
-        .footnotes-list li {{
-            margin: 0.5em 0;
-        }}
-        .footnote-backref {{
-            text-decoration: none;
-            color: #0066cc;
-            margin-left: 0.5em;
-        }}
-        .footnotes-separator {{
-            border: none;
-            border-top: 1px solid #ccc;
-            margin: 2em 0 1em 0;
-        }}
-        .drawing {{
-            margin: 0.5em 0;
-        }}
-        .text-box {{
-            margin: 0.5em 0;
-        }}
+        {main_css}
         {page_break_css}
     </style>
 </head>
@@ -2873,6 +2907,14 @@ class OdtToHtmlConverter:
 {body_content}
 </body>
 </html>'''
+        main_css = self._minify_css(main_css)
+        html_format_str = self._minify_html(html_format_str)
+        result = html_format_str.format(
+            title=escape(title),
+            main_css=main_css,
+            page_break_css=page_break_css,
+            body_content=body_content
+        )
         return result
 
 def main():
@@ -2883,8 +2925,8 @@ def main():
 Examples:
     python odt_to_html.py document.odt output.html
     python odt_to_html.py document.odt output.html --no-page-breaks
-    python odt_to_html.py "path/to/my document.odt" "path/to/output.html"
-        '''
+    python odt_to_html.py "path/to/input document.odt" "path/to/output.html"
+'''
     )
     parser.add_argument('input', help='Path to the input ODT file')
     parser.add_argument('output', help='Path for the output HTML file')

@@ -1,4 +1,4 @@
-
+# Note
 
 - v0.4.16
   - 調整shape選轉的方式，修正旋轉公式
@@ -70,3 +70,13 @@
     - *unspecified* -> inherit from parent
 - v0.4.27:
   - fix: Respect line-decoration for parent element in span:text
+- v0.5.0:
+  - feat: Minify html
+  - perf: Avoid slow builtin mimetypes.init on common file extensions
+  - feat: Show title in html
+  - feat: Limited support for wrapping paragraph anchored image
+    - It is hard to achieve odt wrapping model with html display:float limitation, without js
+  - fix: Respect ordered and unordered list
+  - fix: Fix SVG imcomplete smile face drawing
+  - todo: Enable mode for degenerating paragraph anchor into character anchor for better flow
+  - todo: Respect page type on each page
