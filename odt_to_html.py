@@ -2935,7 +2935,7 @@ Examples:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Write output
-        output_path.write_text(html_content, encoding='utf-8')
+        output_path.write_text(html_content, encoding='utf-8', newline='\n')
         
         print(f"Successfully converted: {input_path} -> {output_path}")
         
