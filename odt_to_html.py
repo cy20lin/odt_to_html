@@ -409,7 +409,8 @@ class OdtToHtmlConverterConfig(pydantic.BaseModel):
 
 class OdtToHtmlConverterRuntime(pydantic.BaseModel):
     def __init__(self, config=None):
-        # Lets do l
+        # NOTE: Comment for lazy initializion, don't initialize mimetypes registry at first
+        # to bypass slow mimetypes initialization for common extensions
         # mimetypes.init()
         pass
 
